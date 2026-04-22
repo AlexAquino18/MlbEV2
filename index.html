@@ -231,8 +231,7 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const PROXY       = '/api/proxy';
-const SPORT       = 'baseball';
-const LEAGUE      = 'mlb';
+const SPORT       = 'mlb';
 const REFRESH_MS  = 60 * 60 * 1000;
 const SHARP_MOVE  = 0.5;
 const SHARP_CONS  = 0.60;
@@ -904,7 +903,7 @@ function setupChartEvents(){
 async function fetchAll(){
   try{
     pitchers={};
-    const events=await oddsFetch('/events',{ sport: SPORT, league: LEAGUE });
+    const events=await oddsFetch('/events',{ sport: SPORT });
     if(!events.length){
       document.getElementById('plist').innerHTML=`<div class="ndm">NO MLB EVENTS TODAY</div>`;
       return;
