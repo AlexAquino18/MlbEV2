@@ -268,6 +268,31 @@ async function oddsFetch(path, params={}) {
   return r.json();
 }
 
+async function fetchMlbEvents() {
+  const attempts = [
+    { sport: SPORT },
+    { sport: 'baseball', league: 'mlb-regular-season' },
+    { sport: 'baseball', league: 'mlb' },
+    { sport: 'baseball' }
+  ];
+
+  let lastErr = null;
+  for (const params of attempts) {
+    try {
+      const events = await oddsFetch('/events', params);
+      if (!Array.isArray(events)) return [];
+      if (params.league) return events;
+      if (params.sport === 'baseball') {
+        return events.filter(ev => /(^|-)mlb($|-)/i.test(ev.league?.slug || '') || /\bmlb\b/i.test(ev.league?.name || ''));
+      }
+      return events;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('Unable to load MLB events');
+}
+
 // Search MLB player by name
 async function findMLBPlayer(name) {
   const cacheKey = `player_${name}`;
@@ -903,7 +928,7 @@ function setupChartEvents(){
 async function fetchAll(){
   try{
     pitchers={};
-    const events=await oddsFetch('/events',{ sport: SPORT });
+    const events=await fetchMlbEvents();
     if(!events.length){
       document.getElementById('plist').innerHTML=`<div class="ndm">NO MLB EVENTS TODAY</div>`;
       return;
