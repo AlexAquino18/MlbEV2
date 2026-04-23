@@ -465,7 +465,8 @@ function processEvent(ev) {
         }
 
         const isStrikeoutProp = /strikeout/i.test(propType) || /strikeout/i.test(mkt.name || '');
-        if (!isStrikeoutProp) continue;
+        const isBatterTotal = /batter|total/i.test(propType) || /batter|total/i.test(mkt.name || '');
+        if (!isStrikeoutProp || isBatterTotal) continue;
         foundProps = true;
         if (!byP[playerName]) byP[playerName]={ propType };
         if (o.hdp != null) byP[playerName].line = o.hdp;
@@ -569,7 +570,7 @@ function renderList(){
     const init=displayName.split(' ').map(p=>p[0]).join('').slice(0,2).toUpperCase();
     const ac=selected===name?' active':'';
     const sc=sh?' sharp-item':'';
-    return `<div class="pitem${ac}${sc}" style="animation-delay:${i*18}ms" onclick="selectPitcher(${JSON.stringify(name)})">
+    return `<div class="pitem${ac}${sc}" style="animation-delay:${i*18}ms" onclick='selectPitcher(${JSON.stringify(name)})'>
       <div class="pav">${init}</div>
       <div class="pin"><div class="pname">${name}</div><div class="pgame">${d.game} · ${d.propType||'Strikeouts'}</div></div>
       <div class="pr">
