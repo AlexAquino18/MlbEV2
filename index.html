@@ -470,8 +470,8 @@ function processEvent(ev) {
         }
 
         const isStrikeoutProp = /strikeout/i.test(propType) || /strikeout/i.test(mkt.name || '');
-        const isBatterTotal = /batter|total/i.test(propType) || /batter|total/i.test(mkt.name || '');
-        if (!isStrikeoutProp || isBatterTotal) continue;
+        const isBatter = /batter/i.test(propType) || /batter/i.test(mkt.name || '');
+        if (!isStrikeoutProp || isBatter) continue;
         foundProps = true;
         if (!byP[playerName]) byP[playerName] = { propType };
         if (o.hdp != null) byP[playerName].line = o.hdp;
@@ -490,7 +490,7 @@ function processEvent(ev) {
           homeTeam: ev.home,
           mlbEventId: ev.id,
           propType: odds.propType,
-          playerRole: /batter/i.test(odds.propType) ? 'batter' : /pitcher/i.test(odds.propType) ? 'pitcher' : 'player',
+          playerRole: /batter/i.test(odds.propType) ? 'batter' : /strikeout/i.test(odds.propType) ? 'pitcher' : /pitcher/i.test(odds.propType) ? 'pitcher' : 'player',
           playerName: name,
           propLine: odds.line
         };
@@ -500,7 +500,7 @@ function processEvent(ev) {
         pitchers[propKey].awayTeam = ev.away;
         pitchers[propKey].homeTeam = ev.home;
         pitchers[propKey].propType = odds.propType;
-        pitchers[propKey].playerRole = /batter/i.test(odds.propType) ? 'batter' : /pitcher/i.test(odds.propType) ? 'pitcher' : 'player';
+        pitchers[propKey].playerRole = /batter/i.test(odds.propType) ? 'batter' : /strikeout/i.test(odds.propType) ? 'pitcher' : /pitcher/i.test(odds.propType) ? 'pitcher' : 'player';
         pitchers[propKey].playerName = name;
         pitchers[propKey].propLine = odds.line;
       }
@@ -591,7 +591,7 @@ function renderList(){
     const sc=sh?' sharp-item':'';
     return `<div class="pitem${ac}${sc}" style="animation-delay:${i*18}ms" onclick='selectPitcher(${JSON.stringify(name)})'>
       <div class="pav">${init}</div>
-      <div class="pin"><div class="pname">${name}</div><div class="pgame">${d.game} · ${d.propType||'Strikeouts'}</div></div>
+      <div class="pin"><div class="pname">${displayName}</div><div class="pgame">${d.game} · ${d.propType||'Strikeouts'}</div></div>
       <div class="pr">
         <div class="pline">${cl??'—'}</div>
         <div class="pmove ${mc}">${ms}</div>
