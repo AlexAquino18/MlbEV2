@@ -1054,13 +1054,15 @@ async function fetchAll(force=false){
       document.getElementById('plist').innerHTML=`<div class="ndm">NO UPCOMING MLB EVENTS FOUND</div>`;
       return;
     }
-    const results = await Promise.all(events.map(ev =>
-      oddsFetch('/odds',{
-        eventId: ev.id,
+    const chunks=[];
+    for(let i=0;i<events.length;i+=10) chunks.push(events.slice(i,i+10));
+    const results = await Promise.all(chunks.map(chunk =>
+      oddsFetch('/odds/multi',{
+        eventIds: chunk.map(ev=>ev.id).join(','),
         bookmakers: ODDS_BOOKS
       }).catch(() => null)
     ));
-    const oddsEvents = results.filter(Boolean);
+    const oddsEvents = results.flat().filter(Boolean);
     if(!oddsEvents.length){
       document.getElementById('plist').innerHTML=`<div class="ndm">NO MLB STRIKEOUT PROPS AVAILABLE</div>`;
       return;

@@ -3,6 +3,7 @@ const cache = new Map();
 
 function getTtlMs(source, path) {
   if (source === 'odds' && path === '/events') return 15 * 60 * 1000;
+  if (source === 'odds' && path === '/odds') return 15 * 60 * 1000;
   if (source === 'odds' && path === '/odds/multi') return 15 * 60 * 1000;
   if (source === 'mlb' && path === '/api/v1/schedule') return 10 * 60 * 1000;
   return 0;
