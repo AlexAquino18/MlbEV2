@@ -451,9 +451,14 @@ async function fetchTeamRoster(teamId) {
 function processEvent(ev) {
   const game = `${ev.away} @ ${ev.home}`;
   let foundProps = false;
-  for (const [bookName, markets] of Object.entries(ev.bookmakers || {})) {
-    for (const mkt of (markets || [])) {
-      const byP={};
+  const bookmakers = Array.isArray(ev.bookmakers)
+    ? ev.bookmakers
+    : Object.entries(ev.bookmakers || {}).map(([bookName, markets]) => ({ title: bookName, markets }));
+
+  for (const bookmaker of bookmakers) {
+    const bookName = bookmaker.title || bookmaker.key || '';
+    for (const mkt of (bookmaker.markets || [])) {
+      const byP = {};
       for (const o of (mkt.odds || [])) {
         if (!o.label) continue;
         let playerName = o.label;
@@ -468,22 +473,36 @@ function processEvent(ev) {
         const isBatterTotal = /batter|total/i.test(propType) || /batter|total/i.test(mkt.name || '');
         if (!isStrikeoutProp || isBatterTotal) continue;
         foundProps = true;
-        if (!byP[playerName]) byP[playerName]={ propType };
+        if (!byP[playerName]) byP[playerName] = { propType };
         if (o.hdp != null) byP[playerName].line = o.hdp;
         if (o.over != null) byP[playerName].over = o.over;
         if (o.under != null) byP[playerName].under = o.under;
       }
-      for (const [name,odds] of Object.entries(byP)) {
-        if (odds.line==null) continue;
+      for (const [name, odds] of Object.entries(byP)) {
+        if (odds.line == null) continue;
         const propKey = `${name}__${odds.propType}__${odds.line}`;
-        if (!pitchers[propKey]) pitchers[propKey]={history:[],currentBooks:{},game,gameTime:ev.date,awayTeam:ev.away,homeTeam:ev.home,mlbEventId:ev.id,propType:odds.propType,playerRole:/batter/i.test(odds.propType)?'batter':/pitcher/i.test(odds.propType)?'pitcher':'player',playerName:name,propLine:odds.line};
-        pitchers[propKey].currentBooks[bookName]={line:odds.line,over:odds.over,under:odds.under};
-        pitchers[propKey].game=game;pitchers[propKey].gameTime=ev.date;
-        pitchers[propKey].awayTeam=ev.away;pitchers[propKey].homeTeam=ev.home;
-        pitchers[propKey].propType=odds.propType;
-        pitchers[propKey].playerRole=/batter/i.test(odds.propType)?'batter':/pitcher/i.test(odds.propType)?'pitcher':'player';
-        pitchers[propKey].playerName=name;
-        pitchers[propKey].propLine=odds.line;
+        if (!pitchers[propKey]) pitchers[propKey] = {
+          history: [],
+          currentBooks: {},
+          game,
+          gameTime: ev.date,
+          awayTeam: ev.away,
+          homeTeam: ev.home,
+          mlbEventId: ev.id,
+          propType: odds.propType,
+          playerRole: /batter/i.test(odds.propType) ? 'batter' : /pitcher/i.test(odds.propType) ? 'pitcher' : 'player',
+          playerName: name,
+          propLine: odds.line
+        };
+        pitchers[propKey].currentBooks[bookName] = { line: odds.line, over: odds.over, under: odds.under };
+        pitchers[propKey].game = game;
+        pitchers[propKey].gameTime = ev.date;
+        pitchers[propKey].awayTeam = ev.away;
+        pitchers[propKey].homeTeam = ev.home;
+        pitchers[propKey].propType = odds.propType;
+        pitchers[propKey].playerRole = /batter/i.test(odds.propType) ? 'batter' : /pitcher/i.test(odds.propType) ? 'pitcher' : 'player';
+        pitchers[propKey].playerName = name;
+        pitchers[propKey].propLine = odds.line;
       }
     }
   }
