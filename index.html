@@ -240,7 +240,7 @@ const ODDS_CACHE_KEY = 'mlbev_odds_cache_v1';
 const HISTORY_KEY = 'mlbev_pitcher_history_v1';
 const HISTORY_LIMIT = 336;
 const EVENT_LOOKAHEAD_DAYS = 7;
-const MAX_EVENT_BATCHES = 3;
+const MAX_EVENTS_TO_SCAN = 24;
 
 const BOOK_COLORS = {
   'FanDuel':'#4a90e2','DraftKings':'#5cb85c','BetMGM':'#e8962d','BetRivers':'#e74c3c',
@@ -285,14 +285,13 @@ async function fetchMlbEvents() {
     sport: 'baseball',
     status: 'pending,live',
     from: now.toISOString(),
-    to: to.toISOString(),
-    bookmaker: 'FanDuel'
+    to: to.toISOString()
   });
   if (!Array.isArray(events)) return [];
   return events
     .filter(isMlbLeague)
     .sort((a,b)=>new Date(a.date) - new Date(b.date))
-    .slice(0, MAX_EVENT_BATCHES * 10);
+    .slice(0, MAX_EVENTS_TO_SCAN);
 }
 
 function loadOddsCache() {
@@ -451,25 +450,43 @@ async function fetchTeamRoster(teamId) {
 // ── Odds data processing ─────────────────────────────────────────────────────
 function processEvent(ev) {
   const game = `${ev.away} @ ${ev.home}`;
+  let foundProps = false;
   for (const [bookName, markets] of Object.entries(ev.bookmakers || {})) {
-    const mkt = (markets || []).find(m => /strikeouts/i.test(m.name || ''));
-    if (!mkt) continue;
-    const byP={};
-    for (const o of (mkt.odds || [])) {
-      if (!o.label) continue;
-      if (!byP[o.label]) byP[o.label]={};
-      if (o.hdp != null) byP[o.label].line = o.hdp;
-      if (o.over != null) byP[o.label].over = o.over;
-      if (o.under != null) byP[o.label].under = o.under;
-    }
-    for (const [name,odds] of Object.entries(byP)) {
-      if (odds.line==null) continue;
-      if (!pitchers[name]) pitchers[name]={history:[],currentBooks:{},game,gameTime:ev.date,awayTeam:ev.away,homeTeam:ev.home,mlbEventId:ev.id};
-      pitchers[name].currentBooks[bookName]={line:odds.line,over:odds.over,under:odds.under};
-      pitchers[name].game=game;pitchers[name].gameTime=ev.date;
-      pitchers[name].awayTeam=ev.away;pitchers[name].homeTeam=ev.home;
+    for (const mkt of (markets || [])) {
+      const byP={};
+      for (const o of (mkt.odds || [])) {
+        if (!o.label) continue;
+        let playerName = o.label;
+        let propType = mkt.name || 'Strikeouts';
+        const labelMatch = o.label.match(/^(.*?)\s*\((.*?)\)\s*$/);
+        if (labelMatch) {
+          playerName = labelMatch[1].trim();
+          propType = labelMatch[2].trim();
+        }
+
+        const isStrikeoutProp = /strikeout/i.test(propType) || /strikeout/i.test(mkt.name || '');
+        if (!isStrikeoutProp) continue;
+        foundProps = true;
+        if (!byP[playerName]) byP[playerName]={ propType };
+        if (o.hdp != null) byP[playerName].line = o.hdp;
+        if (o.over != null) byP[playerName].over = o.over;
+        if (o.under != null) byP[playerName].under = o.under;
+      }
+      for (const [name,odds] of Object.entries(byP)) {
+        if (odds.line==null) continue;
+        const propKey = `${name}__${odds.propType}__${odds.line}`;
+        if (!pitchers[propKey]) pitchers[propKey]={history:[],currentBooks:{},game,gameTime:ev.date,awayTeam:ev.away,homeTeam:ev.home,mlbEventId:ev.id,propType:odds.propType,playerRole:/batter/i.test(odds.propType)?'batter':/pitcher/i.test(odds.propType)?'pitcher':'player',playerName:name,propLine:odds.line};
+        pitchers[propKey].currentBooks[bookName]={line:odds.line,over:odds.over,under:odds.under};
+        pitchers[propKey].game=game;pitchers[propKey].gameTime=ev.date;
+        pitchers[propKey].awayTeam=ev.away;pitchers[propKey].homeTeam=ev.home;
+        pitchers[propKey].propType=odds.propType;
+        pitchers[propKey].playerRole=/batter/i.test(odds.propType)?'batter':/pitcher/i.test(odds.propType)?'pitcher':'player';
+        pitchers[propKey].playerName=name;
+        pitchers[propKey].propLine=odds.line;
+      }
     }
   }
+  return foundProps;
 }
 
 function snapshot() {
@@ -548,12 +565,13 @@ function renderList(){
     const mv=netOddsMove(d),cl=consensusLine(d),sh=isSharp(d);
     const mc=mv>0?'up':mv<0?'dn':'flat';
     const ms=mv===0?'FLAT':fmtOdds(Math.round(mv));
-    const init=name.split(' ').map(p=>p[0]).join('').slice(0,2).toUpperCase();
+    const displayName=d.playerName||name;
+    const init=displayName.split(' ').map(p=>p[0]).join('').slice(0,2).toUpperCase();
     const ac=selected===name?' active':'';
     const sc=sh?' sharp-item':'';
     return `<div class="pitem${ac}${sc}" style="animation-delay:${i*18}ms" onclick="selectPitcher(${JSON.stringify(name)})">
       <div class="pav">${init}</div>
-      <div class="pin"><div class="pname">${name}</div><div class="pgame">${d.game}</div></div>
+      <div class="pin"><div class="pname">${name}</div><div class="pgame">${d.game} · ${d.propType||'Strikeouts'}</div></div>
       <div class="pr">
         <div class="pline">${cl??'—'}</div>
         <div class="pmove ${mc}">${ms}</div>
@@ -662,9 +680,15 @@ function renderDetail(name){
 // ── MLB async data loader ────────────────────────────────────────────────────
 async function loadMLBData(name){
   const d=pitchers[name]; if(!d) return;
+  if(d.playerRole && d.playerRole!=='pitcher'){
+    document.getElementById('sec-szn').innerHTML=`<div class="sec-hdr">PLAYER INFO</div><div class="ndm" style="padding:8px 0;font-size:10px">${d.propType||'Strikeout prop'} is available, but pitcher-only stat panels are hidden for non-pitcher props.</div>`;
+    document.getElementById('sec-gl').innerHTML=`<div class="sec-hdr">RECENT HISTORY</div><div class="ndm" style="padding:8px 0;font-size:10px">Game-log pitch data is only shown for pitcher strikeout props.</div>`;
+    document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">MATCHUP</div><div class="ndm" style="padding:8px 0;font-size:10px">Additional matchup panels are only shown for pitcher strikeout props.</div>`;
+    return;
+  }
 
   // 1. Find player
-  const player=await findMLBPlayer(name);
+  const player=await findMLBPlayer(d.playerName||name);
   if(!player){
     document.getElementById('sec-szn').innerHTML=`<div class="sec-hdr">2025 SEASON STATS</div><div class="ndm" style="padding:8px 0;font-size:10px">Player not found in MLB API</div>`;
     document.getElementById('sec-gl').innerHTML=`<div class="sec-hdr">LAST 10 STARTS</div><div class="ndm" style="padding:8px 0;font-size:10px">No data available</div>`;
@@ -1030,21 +1054,25 @@ async function fetchAll(force=false){
       document.getElementById('plist').innerHTML=`<div class="ndm">NO UPCOMING MLB EVENTS FOUND</div>`;
       return;
     }
-    const chunks=[];
-    for(let i=0;i<events.length;i+=10) chunks.push(events.slice(i,i+10));
-    const results = await Promise.all(chunks.map(chunk =>
-      oddsFetch('/odds/multi',{
-        eventIds: chunk.map(ev=>ev.id).join(','),
+    const results = await Promise.all(events.map(ev =>
+      oddsFetch('/odds',{
+        eventId: ev.id,
         bookmakers: ODDS_BOOKS
-      })
+      }).catch(() => null)
     ));
-    const oddsEvents = results.flat().filter(Boolean);
+    const oddsEvents = results.filter(Boolean);
     if(!oddsEvents.length){
       document.getElementById('plist').innerHTML=`<div class="ndm">NO MLB STRIKEOUT PROPS AVAILABLE</div>`;
       return;
     }
-    saveOddsCache(oddsEvents);
-    renderOddsEvents(oddsEvents, Date.now());
+    pitchers = {};
+    const propEvents = oddsEvents.filter(ev => processEvent(ev));
+    if(!propEvents.length || !Object.keys(pitchers).length){
+      document.getElementById('plist').innerHTML=`<div class="ndm">NO MLB STRIKEOUT PROPS AVAILABLE</div>`;
+      return;
+    }
+    saveOddsCache(propEvents);
+    renderOddsEvents(propEvents, Date.now());
   } catch(err){
     console.error(err);
     const cached = loadOddsCache();
