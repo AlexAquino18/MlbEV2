@@ -361,8 +361,13 @@ function parseOddsNumber(value){
 
 function toAmericanOdds(value){
   const n = parseOddsNumber(value);
-  if(n == null) return null;
-  if(n > 0 && n < 20) return Math.round((n - 1) * 100);
+  if (n == null) return null;
+  if (n > 0 && n < 20) {
+    if (n >= 2) {
+      return Math.round((n - 1) * 100);
+    }
+    return -Math.round(100 / (n - 1));
+  }
   return Math.round(n);
 }
 
