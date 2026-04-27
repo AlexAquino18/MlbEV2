@@ -241,6 +241,7 @@ const HISTORY_KEY = 'mlbev_pitcher_history_v1';
 const HISTORY_LIMIT = 336;
 const EVENT_LOOKAHEAD_DAYS = 7;
 const MAX_EVENTS_TO_SCAN = 24;
+const CURRENT_SEASON = new Date().getFullYear();
 
 const BOOK_COLORS = {
   'FanDuel':'#4a90e2','DraftKings':'#5cb85c','BetMGM':'#e8962d','BetRivers':'#e74c3c',
@@ -336,6 +337,31 @@ function sameBooks(a, b) {
   return JSON.stringify(a || {}) === JSON.stringify(b || {});
 }
 
+function parseOddsNumber(value){
+  if(value==null) return null;
+  const str = String(value).trim().replace(/^\+/, '');
+  const n = Number(str);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toAmericanOdds(value){
+  const n = parseOddsNumber(value);
+  if(n == null) return null;
+  if(n > 0 && n < 20) return Math.round((n - 1) * 100);
+  return Math.round(n);
+}
+
+function getOddsPrice(obj, side){
+  const keys = [`${side}American`, `${side}Price`, `${side}Odds`, side];
+  for(const key of keys){
+    if(obj[key] != null){
+      const odds = toAmericanOdds(obj[key]);
+      if(odds != null) return odds;
+    }
+  }
+  return null;
+}
+
 function hydratePitcherHistory() {
   const store = loadHistoryStore();
   for (const [name, d] of Object.entries(pitchers)) {
@@ -381,7 +407,7 @@ async function findMLBPlayer(name) {
 }
 
 // Get pitcher last N game logs
-async function fetchPitcherGameLog(mlbId, season=2025) {
+async function fetchPitcherGameLog(mlbId, season=CURRENT_SEASON) {
   const cacheKey = `gamelog_${mlbId}_${season}`;
   if (mlbCache[cacheKey]) return mlbCache[cacheKey];
   try {
@@ -395,7 +421,7 @@ async function fetchPitcherGameLog(mlbId, season=2025) {
 }
 
 // Get pitcher season stats
-async function fetchPitcherSeasonStats(mlbId, season=2025) {
+async function fetchPitcherSeasonStats(mlbId, season=CURRENT_SEASON) {
   const cacheKey = `szn_${mlbId}_${season}`;
   if (mlbCache[cacheKey]) return mlbCache[cacheKey];
   try {
@@ -474,9 +500,14 @@ function processEvent(ev) {
         if (!isStrikeoutProp || isBatter) continue;
         foundProps = true;
         if (!byP[playerName]) byP[playerName] = { propType };
-        if (o.hdp != null) byP[playerName].line = o.hdp;
-        if (o.over != null) byP[playerName].over = o.over;
-        if (o.under != null) byP[playerName].under = o.under;
+        if (o.hdp != null) {
+          const lineVal = parseOddsNumber(o.hdp);
+          if (lineVal != null) byP[playerName].line = lineVal;
+        }
+        const overOdds = getOddsPrice(o, 'over');
+        const underOdds = getOddsPrice(o, 'under');
+        if (overOdds != null) byP[playerName].over = overOdds;
+        if (underOdds != null) byP[playerName].under = underOdds;
       }
       for (const [name, odds] of Object.entries(byP)) {
         if (odds.line == null) continue;
@@ -665,8 +696,7 @@ function renderDetail(name){
 
   <!-- Season stats -->
   <div class="sec" id="sec-szn">
-    <div class="sec-hdr">2025 SEASON STATS</div>
-    <div class="mini-load"><div class="mini-ring"></div>Loading stats...</div>
+    <div class="sec-hdr">${CURRENT_SEASON} SEASON STATS</div>
   </div>
 
   <!-- Odds chart -->
@@ -710,7 +740,7 @@ async function loadMLBData(name){
   // 1. Find player
   const player=await findMLBPlayer(d.playerName||name);
   if(!player){
-    document.getElementById('sec-szn').innerHTML=`<div class="sec-hdr">2025 SEASON STATS</div><div class="ndm" style="padding:8px 0;font-size:10px">Player not found in MLB API</div>`;
+    document.getElementById('sec-szn').innerHTML=`<div class="sec-hdr">${CURRENT_SEASON} SEASON STATS</div><div class="ndm" style="padding:8px 0;font-size:10px">Player not found in MLB API</div>`;
     document.getElementById('sec-gl').innerHTML=`<div class="sec-hdr">LAST 10 STARTS</div><div class="ndm" style="padding:8px 0;font-size:10px">No data available</div>`;
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">No data available</div>`;
     return;
@@ -720,8 +750,8 @@ async function loadMLBData(name){
 
   // 2. Season stats + game log in parallel
   const [szn, gamelog, schedule] = await Promise.all([
-    fetchPitcherSeasonStats(mlbId, 2025),
-    fetchPitcherGameLog(mlbId, 2025),
+    fetchPitcherSeasonStats(mlbId),
+    fetchPitcherGameLog(mlbId),
     fetchTodaySchedule()
   ]);
 
@@ -772,7 +802,7 @@ function renderSeasonStats(szn, name){
   const el=document.getElementById('sec-szn');
   if(!el||selected!==name) return;
   if(!szn){
-    el.innerHTML=`<div class="sec-hdr">2025 SEASON STATS</div><div class="ndm" style="padding:8px 0;font-size:10px">No 2025 stats yet</div>`;
+    el.innerHTML=`<div class="sec-hdr">${CURRENT_SEASON} SEASON STATS</div><div class="ndm" style="padding:8px 0;font-size:10px">No ${CURRENT_SEASON} stats yet</div>`;
     return;
   }
   const so=szn.strikeOuts||0, bf=szn.battersFaced||1;
@@ -787,7 +817,7 @@ function renderSeasonStats(szn, name){
     {v:szn.strikeoutsPer9Inn||'—', l:'K/9'},
     {v:szn.walksPer9Inn||'—', l:'BB/9'},
   ];
-  el.innerHTML=`<div class="sec-hdr">2025 SEASON STATS</div>
+  el.innerHTML=`<div class="sec-hdr">${CURRENT_SEASON} SEASON STATS</div>
   <div class="szn-grid">${items.map(it=>`<div class="szn-card"><div class="szn-v">${it.v}</div><div class="szn-l">${it.l}</div></div>`).join('')}</div>`;
 }
 
@@ -953,7 +983,7 @@ function drawChart(name){
   }
 
   // If only 1 snapshot, show "waiting" state on canvas
-  if(d.history.length<2||!allOdds.length){
+  if(!allOdds.length){
     ctx.fillStyle='#08090b'; ctx.fillRect(0,0,W,H);
     ctx.fillStyle='#4e6070'; ctx.font='10px JetBrains Mono, monospace';
     ctx.textAlign='center';
