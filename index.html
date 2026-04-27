@@ -41,6 +41,7 @@ header{flex-shrink:0;padding:18px 26px;display:flex;align-items:center;justify-c
 .logo em{color:var(--dim);font-style:normal}
 .hdr-r{display:flex;align-items:center;gap:14px}
 .upd{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);display:flex;align-items:center;gap:8px}
+.live-badge{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--green);background:rgba(75,242,176,.12);border:1px solid rgba(75,242,176,.18);border-radius:999px;padding:5px 10px;letter-spacing:.8px}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--accent2);box-shadow:0 0 8px rgba(100,255,180,.35);animation:blink 2s ease-in-out infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
 .btn{background:rgba(57,216,255,.08);border:1px solid rgba(57,216,255,.20);color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:11px;padding:8px 14px;border-radius:999px;cursor:pointer;letter-spacing:.9px;transition:background .18s ease,border-color .18s ease,color .18s ease,transform .18s ease;display:flex;align-items:center;gap:8px}
@@ -204,6 +205,7 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
   <div class="logo">MLB K PROPS <em>·</em> TRACKER</div>
   <div class="hdr-r">
     <div class="upd"><div class="dot"></div><span id="lastUpd">—</span></div>
+    <div class="live-badge" id="liveBadge">AUTO · 60m</div>
     <button class="btn" id="refreshBtn" onclick="manualRefresh()">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       REFRESH
@@ -468,6 +470,103 @@ async function fetchTodaySchedule() {
   } catch { return []; }
 }
 
+async function fetchTeamSeasonStats(teamId, season=CURRENT_SEASON, group='hitting') {
+  const cacheKey = `team_${teamId}_${group}_${season}`;
+  if (mlbCache[cacheKey]) return mlbCache[cacheKey];
+  try {
+    const data = await mlbFetch(`/api/v1/teams/${teamId}/stats`, {
+      stats: 'season', group, season, sportId: 1
+    });
+    const s = data.stats?.[0]?.splits?.[0]?.stat || null;
+    mlbCache[cacheKey] = s;
+    return s;
+  } catch { return null; }
+}
+
+async function fetchTeamRecentGames(teamId, endDate, limit=15) {
+  const cacheKey = `team_sched_${teamId}_${endDate}`;
+  if (mlbCache[cacheKey]) return mlbCache[cacheKey];
+  try {
+    const end = new Date(endDate || new Date());
+    const start = new Date(end);
+    start.setDate(end.getDate() - 45);
+    const data = await mlbFetch('/api/v1/schedule', {
+      sportId:1,
+      teamId,
+      startDate: start.toISOString().slice(0,10),
+      endDate: end.toISOString().slice(0,10),
+      hydrate: 'linescore,team'
+    });
+    const games = [];
+    for (const day of data.dates || []) {
+      for (const g of day.games || []) {
+        if (g.status?.codedGameState === 'F' || g.status?.abstractGameState === 'Final') {
+          games.push(g);
+        }
+      }
+    }
+    games.sort((a,b)=>new Date(b.gameDate)-new Date(a.gameDate));
+    const recent = games.slice(0, limit);
+    mlbCache[cacheKey] = recent;
+    return recent;
+  } catch { return []; }
+}
+
+function summarizeTeamGames(games, teamId) {
+  let wins = 0, losses = 0, scored = 0, allowed = 0;
+  for (const game of games) {
+    const isHome = game.teams.home.team.id === teamId;
+    const teamRuns = game.linescore?.teams?.[isHome ? 'home' : 'away']?.runs;
+    const oppRuns = game.linescore?.teams?.[isHome ? 'away' : 'home']?.runs;
+    if (teamRuns == null || oppRuns == null) continue;
+    if (teamRuns > oppRuns) wins += 1;
+    else if (teamRuns < oppRuns) losses += 1;
+    scored += teamRuns;
+    allowed += oppRuns;
+  }
+  const total = wins + losses;
+  return {
+    games: total,
+    wins,
+    losses,
+    avgScored: total ? (scored / total).toFixed(1) : '—',
+    avgAllowed: total ? (allowed / total).toFixed(1) : '—'
+  };
+}
+
+async function renderMatchupContext(name, todayGame, teamId, teamName, venue) {
+  const el = document.getElementById('sec-matchup');
+  if (!el || selected !== name) return;
+  el.innerHTML = `<div class="sec-hdr">GAME MATCHUP CONTEXT</div><div class="mini-load"><div class="mini-ring"></div>Loading matchup data...</div>`;
+  const [hit, pit, recent] = await Promise.all([
+    fetchTeamSeasonStats(teamId, CURRENT_SEASON, 'hitting'),
+    fetchTeamSeasonStats(teamId, CURRENT_SEASON, 'pitching'),
+    fetchTeamRecentGames(teamId, todayGame?.gameDate || new Date().toISOString().slice(0,10), 15)
+  ]);
+  if (selected !== name) return;
+  const summary = summarizeTeamGames(recent, teamId);
+  const hso = hit ? `${hit.avg || '—'} / ${hit.obp || '—'} / ${hit.ops || '—'}` : '—';
+  const so = hit?.strikeOuts != null ? hit.strikeOuts : '—';
+  const rs = hit?.runs != null ? hit.runs : '—';
+  const era = pit?.era || '—';
+  const whip = pit?.whip || '—';
+  const soA = pit?.strikeOuts || '—';
+  el.innerHTML = `
+  <div class="sec-hdr">GAME MATCHUP CONTEXT</div>
+  <div class="szn-grid">
+    <div class="szn-card"><div class="szn-v">${teamName}</div><div class="szn-l">Opponent</div></div>
+    <div class="szn-card"><div class="szn-v">${venue || 'Unknown'}</div><div class="szn-l">Venue</div></div>
+    <div class="szn-card"><div class="szn-v">${summary.wins}-${summary.losses}</div><div class="szn-l">Last ${summary.games} Games</div></div>
+    <div class="szn-card"><div class="szn-v">${summary.avgScored}</div><div class="szn-l">Runs Scored</div></div>
+    <div class="szn-card"><div class="szn-v">${summary.avgAllowed}</div><div class="szn-l">Runs Allowed</div></div>
+    <div class="szn-card"><div class="szn-v">${hso}</div><div class="szn-l">Season Offense AVG/OBP/OPS</div></div>
+    <div class="szn-card"><div class="szn-v">${rs}</div><div class="szn-l">Season Runs</div></div>
+    <div class="szn-card"><div class="szn-v">${era}</div><div class="szn-l">Season ERA</div></div>
+    <div class="szn-card"><div class="szn-v">${whip}</div><div class="szn-l">Season WHIP</div></div>
+  </div>
+  `;
+}
+
 // Batter career vs pitcher splits
 async function fetchBatterVsPitcher(batterId, pitcherId) {
   const cacheKey = `bvp_${batterId}_${pitcherId}`;
@@ -719,6 +818,12 @@ function renderDetail(name){
     <div class="sec-hdr">${CURRENT_SEASON} SEASON STATS</div>
   </div>
 
+  <!-- Matchup context -->
+  <div class="sec" id="sec-matchup">
+    <div class="sec-hdr">GAME MATCHUP CONTEXT</div>
+    <div class="mini-load"><div class="mini-ring"></div>Loading matchup data...</div>
+  </div>
+
   <!-- Odds chart -->
   <div class="sec">
     <div class="sec-hdr">ODDS MOVEMENT · Over ${cl??'—'}</div>
@@ -802,9 +907,27 @@ async function loadMLBData(name){
 
   if(todayGame){
     await renderBvP(name, mlbId, todayGame);
+    const opponent = getOppTeamFromGame(todayGame, d);
+    await renderMatchupContext(name, todayGame, opponent.id, opponent.name, todayGame.venue?.name || '');
   } else {
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">Lineup not yet available</div>`;
+    document.getElementById('sec-matchup').innerHTML=`<div class="sec-hdr">GAME MATCHUP CONTEXT</div><div class="ndm" style="padding:8px 0;font-size:10px">Matchup overview not available</div>`;
   }
+}
+
+function getOppTeamFromGame(game, d){
+  const awayName = game.teams?.away?.team?.name || '';
+  const homeName = game.teams?.home?.team?.name || '';
+  const awayId = game.teams?.away?.team?.id;
+  const homeId = game.teams?.home?.team?.id;
+  const aNorm = normTeam(awayName);
+  const hNorm = normTeam(homeName);
+  const dAway = normTeam(d.awayTeam || '');
+  const dHome = normTeam(d.homeTeam || '');
+  if(aNorm.includes(dAway) || dAway.includes(aNorm) || aNorm.includes(dHome) || dHome.includes(aNorm)){
+    return { id: homeId, name: homeName };
+  }
+  return { id: awayId, name: awayName };
 }
 
 function findTodayGame(schedule, awayTeam, homeTeam){
@@ -1164,6 +1287,8 @@ function startTimer(){
 }
 function scheduleRefresh(){
   if(refreshTmr) clearTimeout(refreshTmr);
+  const badge=document.getElementById('liveBadge');
+  if(badge) badge.textContent='AUTO · 60m';
   refreshTmr=setTimeout(async()=>{await fetchAll(true);scheduleRefresh();startTimer();},REFRESH_MS);
 }
 async function manualRefresh(){
