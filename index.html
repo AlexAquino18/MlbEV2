@@ -173,6 +173,20 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
 .szn-v{font-family:'Barlow Condensed',sans-serif;font-size:20px;font-weight:800;color:var(--text);line-height:1}
 .szn-l{font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;letter-spacing:1px;margin-top:4px}
 
+.matchup-hero{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+.matchup-badge{display:inline-flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.8px;padding:8px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.12);width:fit-content}
+.matchup-badge.good{color:var(--green);background:rgba(75,242,176,.12);border-color:rgba(75,242,176,.18)}
+.matchup-badge.bad{color:var(--red);background:rgba(255,111,125,.12);border-color:rgba(255,111,125,.18)}
+.matchup-badge.neutral{color:var(--dim);background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12)}
+.matchup-copy{font-size:12px;line-height:1.6;color:var(--text);max-width:100%}
+.matchup-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.matchup-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px}
+.matchup-card h4{font-family:'Barlow Condensed',sans-serif;font-size:14px;font-weight:800;color:var(--text);margin-bottom:10px}
+.matchup-card .metric{display:flex;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.matchup-card .metric:last-child{border-bottom:none}
+.matchup-card .m-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+.matchup-card .m-value{font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:700;color:var(--text)}
+
 /* ── Book grid ── */
 .book-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .bcard{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:16px;box-shadow:0 18px 40px rgba(0,0,0,.12)}
@@ -534,6 +548,36 @@ function summarizeTeamGames(games, teamId) {
   };
 }
 
+function formatMatchupStat(value, digits=1){
+  const n = Number(String(value).replace(/[^0-9.+-]/g, ''));
+  return Number.isFinite(n) ? n.toFixed(digits) : '—';
+}
+
+function matchupGrade(hit, pit){
+  const avg = parseFloat(hit?.avg) || 0;
+  const obp = parseFloat(hit?.obp) || 0;
+  const ops = parseFloat(hit?.ops) || 0;
+  const era = parseFloat(pit?.era) || 9;
+  const whip = parseFloat(pit?.whip) || 3.5;
+  const k9 = parseFloat(pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || 0);
+
+  const offense = avg * 1100 + obp * 260 + ops * 60;
+  const pitcher = Math.max(0, 170 - era * 25) + Math.max(0, 70 - whip * 12) + k9 * 12;
+  const delta = pitcher - offense;
+
+  const good = delta >= 20;
+  const bad = delta <= -20;
+  const label = good ? 'GOOD MATCHUP' : bad ? 'BAD MATCHUP' : 'NEUTRAL MATCHUP';
+  const tone = good ? 'good' : bad ? 'bad' : 'neutral';
+  const desc = good
+    ? `Opponent offense is below the pitcher's strikeout profile, making this a favorable K prop matchup.`
+    : bad
+      ? `Opponent offense is strong and the starter's ERA/WHIP are elevated, creating a tougher strikeout environment.`
+      : `This matchup is balanced: watch the line and starter command versus opponent contact metrics.`;
+
+  return { label, tone, desc };
+}
+
 async function renderMatchupContext(name, todayGame, teamId, teamName, venue) {
   const el = document.getElementById('sec-matchup');
   if (!el || selected !== name) return;
@@ -544,15 +588,40 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue) {
     fetchTeamRecentGames(teamId, todayGame?.gameDate || new Date().toISOString().slice(0,10), 15)
   ]);
   if (selected !== name) return;
+
   const summary = summarizeTeamGames(recent, teamId);
   const hso = hit ? `${hit.avg || '—'} / ${hit.obp || '—'} / ${hit.ops || '—'}` : '—';
-  const so = hit?.strikeOuts != null ? hit.strikeOuts : '—';
   const rs = hit?.runs != null ? hit.runs : '—';
   const era = pit?.era || '—';
   const whip = pit?.whip || '—';
-  const soA = pit?.strikeOuts || '—';
+  const k9 = pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—';
+  const kPct = pit?.strikeoutPercentage ? `${formatMatchupStat(pit.strikeoutPercentage)}%` : '—';
+  const matchup = matchupGrade(hit, pit);
+
   el.innerHTML = `
   <div class="sec-hdr">GAME MATCHUP CONTEXT</div>
+  <div class="matchup-hero">
+    <span class="matchup-badge ${matchup.tone}">${matchup.label}</span>
+    <div class="matchup-copy">${matchup.desc}</div>
+  </div>
+  <div class="matchup-stats">
+    <div class="matchup-card">
+      <h4>${teamName} Offense</h4>
+      <div class="metric"><span class="m-label">AVG</span><span class="m-value">${hit?.avg||'—'}</span></div>
+      <div class="metric"><span class="m-label">OBP</span><span class="m-value">${hit?.obp||'—'}</span></div>
+      <div class="metric"><span class="m-label">OPS</span><span class="m-value">${hit?.ops||'—'}</span></div>
+      <div class="metric"><span class="m-label">Runs</span><span class="m-value">${rs}</span></div>
+      <div class="metric"><span class="m-label">Last 15</span><span class="m-value">${summary.wins}-${summary.losses}</span></div>
+    </div>
+    <div class="matchup-card">
+      <h4>Pitcher Season</h4>
+      <div class="metric"><span class="m-label">ERA</span><span class="m-value">${era}</span></div>
+      <div class="metric"><span class="m-label">WHIP</span><span class="m-value">${whip}</span></div>
+      <div class="metric"><span class="m-label">K/9</span><span class="m-value">${k9}</span></div>
+      <div class="metric"><span class="m-label">K%</span><span class="m-value">${kPct}</span></div>
+      <div class="metric"><span class="m-label">Venue</span><span class="m-value">${venue || '—'}</span></div>
+    </div>
+  </div>
   <div class="szn-grid">
     <div class="szn-card"><div class="szn-v">${teamName}</div><div class="szn-l">Opponent</div></div>
     <div class="szn-card"><div class="szn-v">${venue || 'Unknown'}</div><div class="szn-l">Venue</div></div>
@@ -906,28 +975,14 @@ async function loadMLBData(name){
   const todayGame = findTodayGame(schedule, d.awayTeam, d.homeTeam);
 
   if(todayGame){
-    await renderBvP(name, mlbId, todayGame);
-    const opponent = getOppTeamFromGame(todayGame, d);
-    await renderMatchupContext(name, todayGame, opponent.id, opponent.name, todayGame.venue?.name || '');
+    const opponent = await renderBvP(name, mlbId, todayGame);
+    if (opponent) {
+      await renderMatchupContext(name, todayGame, opponent.id, opponent.name, todayGame.venue?.name || '');
+    }
   } else {
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">Lineup not yet available</div>`;
     document.getElementById('sec-matchup').innerHTML=`<div class="sec-hdr">GAME MATCHUP CONTEXT</div><div class="ndm" style="padding:8px 0;font-size:10px">Matchup overview not available</div>`;
   }
-}
-
-function getOppTeamFromGame(game, d){
-  const awayName = game.teams?.away?.team?.name || '';
-  const homeName = game.teams?.home?.team?.name || '';
-  const awayId = game.teams?.away?.team?.id;
-  const homeId = game.teams?.home?.team?.id;
-  const aNorm = normTeam(awayName);
-  const hNorm = normTeam(homeName);
-  const dAway = normTeam(d.awayTeam || '');
-  const dHome = normTeam(d.homeTeam || '');
-  if(aNorm.includes(dAway) || dAway.includes(aNorm) || aNorm.includes(dHome) || dHome.includes(aNorm)){
-    return { id: homeId, name: homeName };
-  }
-  return { id: awayId, name: awayName };
 }
 
 function findTodayGame(schedule, awayTeam, homeTeam){
@@ -1017,20 +1072,28 @@ async function renderBvP(name, pitcherId, game){
   // Try to figure which team the pitcher is on from game lineups
   const awayProbable=game.teams?.away?.probablePitcher?.fullName||'';
   const homeProbable=game.teams?.home?.probablePitcher?.fullName||'';
-  
+  const awayNorm = normTeam(awayName);
+  const homeNorm = normTeam(homeName);
+  const dAwayNorm = normTeam(d.awayTeam||'');
+  const dHomeNorm = normTeam(d.homeTeam||'');
+
   // Find opposing team
   let oppTeamId, oppTeamName, ownTeamName;
-  if(homeProbable&&name.toLowerCase().includes(homeProbable.split(' ').pop().toLowerCase())){
-    oppTeamId=awayId; oppTeamName=awayName; ownTeamName=homeName;
-  } else if(awayProbable&&name.toLowerCase().includes(awayProbable.split(' ').pop().toLowerCase())){
-    oppTeamId=homeId; oppTeamName=homeName; ownTeamName=awayName;
+  if(homeProbable && name.toLowerCase().includes(homeProbable.split(' ').pop().toLowerCase())){
+    oppTeamId = awayId; oppTeamName = awayName; ownTeamName = homeName;
+  } else if(awayProbable && name.toLowerCase().includes(awayProbable.split(' ').pop().toLowerCase())){
+    oppTeamId = homeId; oppTeamName = homeName; ownTeamName = awayName;
+  } else if (dHomeNorm && dHomeNorm === homeNorm) {
+    oppTeamId = awayId; oppTeamName = awayName; ownTeamName = homeName;
+  } else if (dAwayNorm && dAwayNorm === awayNorm) {
+    oppTeamId = homeId; oppTeamName = homeName; ownTeamName = awayName;
   } else {
     // fallback: use away team as opponent
-    oppTeamId=awayId; oppTeamName=awayName; ownTeamName=homeName;
+    oppTeamId = awayId; oppTeamName = awayName; ownTeamName = homeName;
   }
 
   // Set tab default
-  if(!lineupTab[name]) lineupTab[name]='opp';
+  if(!lineupTab[name]) lineupTab[name] = 'opp';
 
   // Get lineup from game
   const lineup = game.lineups;
@@ -1049,13 +1112,13 @@ async function renderBvP(name, pitcherId, game){
 
   if(!batters.length){
     el.innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">Lineup not posted yet</div>`;
-    return;
+    return { id: oppTeamId, name: oppTeamName };
   }
 
   // Fetch batter vs pitcher splits in parallel
   const stats=await Promise.all(batters.map(b=>fetchBatterVsPitcher(b.id,pitcherId)));
 
-  if(selected!==name) return;
+  if(selected!==name) return { id: oppTeamId, name: oppTeamName };
 
   const rows=batters.map((b,i)=>{
     const s=stats[i];
@@ -1089,6 +1152,7 @@ async function renderBvP(name, pitcherId, game){
   <div style="margin-top:8px;font-size:9px;color:var(--dim);font-family:'JetBrains Mono',monospace">
     <span style="color:var(--red)">■</span> AVG ≥ .300 &nbsp; <span style="color:var(--green)">■</span> AVG &lt; .200 &nbsp;&nbsp; K% bar = strikeout rate vs this pitcher
   </div>`;
+  return { id: oppTeamId, name: oppTeamName };
 }
 
 // ── Chart ────────────────────────────────────────────────────────────────────
