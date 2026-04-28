@@ -772,7 +772,13 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
   const era = pit?.era || '—';
   const whip = pit?.whip || '—';
   const k9 = pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—';
-  const kPct = pit?.strikeoutPercentage ? `${formatMatchupStat(pit.strikeoutPercentage)}%` : '—';
+  const pitSo = Number(pit?.strikeOuts ?? 0);
+  const pitBf = Number(pit?.battersFaced ?? pit?.totalBatters ?? 0);
+  const kPct = pit?.strikeoutPercentage
+    ? `${formatMatchupStat(pit.strikeoutPercentage)}%`
+    : pitBf > 0
+      ? `${((pitSo / pitBf) * 100).toFixed(1)}%`
+      : '—';
   const activeHand = pitcherHand === 'R' ? 'RHP' : pitcherHand === 'L' ? 'LHP' : null;
   const lookupCode = getBrTeamCode(teamAbbrev || teamName);
   const splitLTeam = resolveSplitTeamStats(splitL, lookupCode);

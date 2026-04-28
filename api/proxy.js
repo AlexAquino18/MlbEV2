@@ -11,21 +11,34 @@ function getTtlMs(source, path) {
 }
 
 function parseBrSplitRanks(html) {
-  const tableMatch = html.match(/<table[^>]+id="split1"[^>]*>([\s\S]*?)<\/table>/i);
-  if (!tableMatch) return [];
-  const rows = Array.from(tableMatch[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
-  return rows.map(match => {
+  const stripTags = value => String(value || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim();
+  const getCellRaw = (row, stat) => {
+    const m = row.match(new RegExp(`data-stat="${stat}"[^>]*>([\\s\\S]*?)<\\/t[dh]>`, 'i'));
+    return m ? stripTags(m[1]) : '';
+  };
+  const toNum = value => {
+    const cleaned = String(value || '').replace(/,/g, '').trim();
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  // Parse any row that has both rank and team cells (works even if table id changes)
+  const rowMatches = Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
+  return rowMatches.map(match => {
     const row = match[1];
-    const rank = Number((row.match(/data-stat="ranker"[^>]*>(\d+)/) || [])[1] || 0);
-    const team = (row.match(/data-stat="team"[^>]*>([^<]+)/) || [])[1] || null;
-    const games = Number((row.match(/data-stat="G"[^>]*>(\d+)/) || [])[1] || 0);
-    const pa = Number((row.match(/data-stat="PA"[^>]*>(\d+)/) || [])[1] || 0);
-    const ab = Number((row.match(/data-stat="AB"[^>]*>(\d+)/) || [])[1] || 0);
-    const r = Number((row.match(/data-stat="R"[^>]*>(\d+)/) || [])[1] || 0);
-    const h = Number((row.match(/data-stat="H"[^>]*>(\d+)/) || [])[1] || 0);
-    const hr = Number((row.match(/data-stat="HR"[^>]*>(\d+)/) || [])[1] || 0);
-    const so = Number((row.match(/data-stat="SO"[^>]*>(\d+)/) || [])[1] || 0);
-    const ops = (row.match(/data-stat="onbase_plus_slugging"[^>]*>([^<]+)/) || [])[1] || null;
+    if (!/data-stat="ranker"/i.test(row) || !/data-stat="team"/i.test(row)) return null;
+
+    const rank = toNum(getCellRaw(row, 'ranker'));
+    const team = getCellRaw(row, 'team') || null;
+    const games = toNum(getCellRaw(row, 'G'));
+    const pa = toNum(getCellRaw(row, 'PA'));
+    const ab = toNum(getCellRaw(row, 'AB'));
+    const r = toNum(getCellRaw(row, 'R'));
+    const h = toNum(getCellRaw(row, 'H'));
+    const hr = toNum(getCellRaw(row, 'HR'));
+    const so = toNum(getCellRaw(row, 'SO'));
+    const opsRaw = getCellRaw(row, 'onbase_plus_slugging');
+    const ops = opsRaw || null;
     const kPct = pa > 0 ? ((so / pa) * 100).toFixed(1) : null;
     const rankValue = rank || null;
     return team ? { rank: rankValue, team: team.trim(), games, pa, ab, r, h, hr, so, kPct, ops } : null;
