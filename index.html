@@ -180,6 +180,7 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
 .matchup-badge.neutral{color:var(--dim);background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12)}
 .matchup-copy{font-size:12px;line-height:1.6;color:var(--text);max-width:100%}
 .matchup-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.rank-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}
 .matchup-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px}
 .matchup-card h4{font-family:'Barlow Condensed',sans-serif;font-size:14px;font-weight:800;color:var(--text);margin-bottom:10px}
 .matchup-card .metric{display:flex;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.06)}
@@ -553,7 +554,7 @@ function formatMatchupStat(value, digits=1){
   return Number.isFinite(n) ? n.toFixed(digits) : '—';
 }
 
-function matchupGrade(hit, pit){
+function matchupGrade(hit, pit, splitRank, splitHand) {
   const avg = parseFloat(hit?.avg) || 0;
   const obp = parseFloat(hit?.obp) || 0;
   const ops = parseFloat(hit?.ops) || 0;
@@ -565,27 +566,45 @@ function matchupGrade(hit, pit){
   const pitcher = Math.max(0, 170 - era * 25) + Math.max(0, 70 - whip * 12) + k9 * 12;
   const delta = pitcher - offense;
 
-  const good = delta >= 20;
-  const bad = delta <= -20;
+  const rankLabel = splitRank != null ? `Rank ${splitRank}` : null;
+  const rankHandLabel = splitHand ? `vs ${splitHand}` : '';
+
+  const rankGood = splitRank != null && splitRank <= 10;
+  const rankBad = splitRank != null && splitRank >= 21;
+
+  if (rankGood || rankBad) {
+    const label = rankGood ? 'GOOD MATCHUP' : 'BAD MATCHUP';
+    const tone = rankGood ? 'good' : 'bad';
+    const desc = rankGood
+      ? `Baseball-Reference rank ${splitRank}/30 ${rankHandLabel} shows the opposing lineup is weak against this handedness.`
+      : `Baseball-Reference rank ${splitRank}/30 ${rankHandLabel} shows the opposing lineup is strong against this handedness.`;
+    return { label, tone, desc };
+  }
+
+  const score = delta + (splitRank != null ? (16 - splitRank) * 1.1 : 0);
+  const good = score >= 25;
+  const bad = score <= -15;
   const label = good ? 'GOOD MATCHUP' : bad ? 'BAD MATCHUP' : 'NEUTRAL MATCHUP';
   const tone = good ? 'good' : bad ? 'bad' : 'neutral';
   const desc = good
-    ? `Opponent offense is below the pitcher's strikeout profile, making this a favorable K prop matchup.`
+    ? `Matchup is favorable. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} helps confirm this.` : 'Offense and pitcher splits line up well.'}`
     : bad
-      ? `Opponent offense is strong and the starter's ERA/WHIP are elevated, creating a tougher strikeout environment.`
-      : `This matchup is balanced: watch the line and starter command versus opponent contact metrics.`;
+      ? `Matchup is tougher. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} pulls this matchup down.` : 'Opponent offense and starter profile are a concern.'}`
+      : `This matchup is balanced. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} is middling and season stats are neutral.` : 'Watch the line and starter command versus opponent contact.'}`;
 
   return { label, tone, desc };
 }
 
-async function renderMatchupContext(name, todayGame, teamId, teamName, venue) {
+async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pitcherHand, teamAbbrev) {
   const el = document.getElementById('sec-matchup');
   if (!el || selected !== name) return;
   el.innerHTML = `<div class="sec-hdr">GAME MATCHUP CONTEXT</div><div class="mini-load"><div class="mini-ring"></div>Loading matchup data...</div>`;
-  const [hit, pit, recent] = await Promise.all([
+  const [hit, pit, recent, splitL, splitR] = await Promise.all([
     fetchTeamSeasonStats(teamId, CURRENT_SEASON, 'hitting'),
     fetchTeamSeasonStats(teamId, CURRENT_SEASON, 'pitching'),
-    fetchTeamRecentGames(teamId, todayGame?.gameDate || new Date().toISOString().slice(0,10), 15)
+    fetchTeamRecentGames(teamId, todayGame?.gameDate || new Date().toISOString().slice(0,10), 15),
+    fetchBrSplitRanks(getBrTeamCode(teamAbbrev || teamName), 'lhp'),
+    fetchBrSplitRanks(getBrTeamCode(teamAbbrev || teamName), 'rhp')
   ]);
   if (selected !== name) return;
 
@@ -596,7 +615,13 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue) {
   const whip = pit?.whip || '—';
   const k9 = pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—';
   const kPct = pit?.strikeoutPercentage ? `${formatMatchupStat(pit.strikeoutPercentage)}%` : '—';
-  const matchup = matchupGrade(hit, pit);
+  const activeHand = pitcherHand === 'R' ? 'RHP' : pitcherHand === 'L' ? 'LHP' : null;
+  const activeRank = activeHand === 'LHP' ? splitL?.teamStats : activeHand === 'RHP' ? splitR?.teamStats : null;
+  const matchup = matchupGrade(hit, pit, activeRank?.rank, activeHand);
+  const vsL = splitL?.teamStats?.rank ?? '—';
+  const vsR = splitR?.teamStats?.rank ?? '—';
+  const lOps = splitL?.teamStats?.ops || '—';
+  const rOps = splitR?.teamStats?.ops || '—';
 
   el.innerHTML = `
   <div class="sec-hdr">GAME MATCHUP CONTEXT</div>
@@ -621,6 +646,13 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue) {
       <div class="metric"><span class="m-label">K%</span><span class="m-value">${kPct}</span></div>
       <div class="metric"><span class="m-label">Venue</span><span class="m-value">${venue || '—'}</span></div>
     </div>
+  </div>
+  <div class="rank-grid">
+    <div class="szn-card"><div class="szn-v">${vsL}</div><div class="szn-l">Opponent vs LHP rank</div></div>
+    <div class="szn-card"><div class="szn-v">${vsR}</div><div class="szn-l">Opponent vs RHP rank</div></div>
+    <div class="szn-card"><div class="szn-v">${activeHand || '—'}</div><div class="szn-l">Active pitcher hand</div></div>
+    <div class="szn-card"><div class="szn-v">${activeRank?.rank ?? '—'}</div><div class="szn-l">Active split rank</div></div>
+    <div class="szn-card"><div class="szn-v">${activeHand === 'LHP' ? lOps : activeHand === 'RHP' ? rOps : '—'}</div><div class="szn-l">Active split OPS</div></div>
   </div>
   <div class="szn-grid">
     <div class="szn-card"><div class="szn-v">${teamName}</div><div class="szn-l">Opponent</div></div>
@@ -659,6 +691,58 @@ async function fetchTeamRoster(teamId) {
     mlbCache[cacheKey] = data.roster || [];
     return mlbCache[cacheKey];
   } catch { return []; }
+}
+
+function getBrTeamCode(abbr) {
+  if (!abbr) return abbr;
+  const key = String(abbr).trim().toUpperCase();
+  const map = {
+    ARI: 'ARI', ARIZONA: 'ARI', DIAMONDBACKS: 'ARI', AZ: 'ARI', DBACKS: 'ARI',
+    ATL: 'ATL', ATLANTA: 'ATL', BRAVES: 'ATL',
+    BAL: 'BAL', BALTIMORE: 'BAL', ORIOLES: 'BAL',
+    BOS: 'BOS', BOSTON: 'BOS', RED SOX: 'BOS', REDSOX: 'BOS',
+    CHC: 'CHC', CUBS: 'CHC', CHICAGO CUBS: 'CHC',
+    CIN: 'CIN', CINCINNATI: 'CIN', REDS: 'CIN',
+    CLE: 'CLE', CLEVELAND: 'CLE', GUARDIANS: 'CLE',
+    COL: 'COL', COLORADO: 'COL', ROCKIES: 'COL',
+    CWS: 'CHW', CHW: 'CHW', WHITE SOX: 'CHW', CHICAGO WHITE SOX: 'CHW',
+    DET: 'DET', DETROIT: 'DET', TIGERS: 'DET',
+    HOU: 'HOU', HOUSTON: 'HOU', ASTROS: 'HOU',
+    KCR: 'KCR', KC: 'KCR', KANSAS CITY: 'KCR', ROYALS: 'KCR',
+    LAA: 'LAA', ANA: 'LAA', ANGELS: 'LAA', LOS ANGELES ANGELS: 'LAA',
+    LAD: 'LAD', LA: 'LAD', DODGERS: 'LAD',
+    MIA: 'MIA', MIAMI: 'MIA', MARLINS: 'MIA',
+    MIL: 'MIL', MILWAUKEE: 'MIL', BREWERS: 'MIL',
+    MIN: 'MIN', MINNESOTA: 'MIN', TWINS: 'MIN',
+    NYM: 'NYM', METS: 'NYM', NEW YORK METS: 'NYM',
+    NYY: 'NYY', YANKEES: 'NYY', NEW YORK YANKEES: 'NYY',
+    OAK: 'OAK', OAKLAND: 'OAK', ATHLETICS: 'OAK', A'S: 'OAK', AS: 'OAK',
+    PHI: 'PHI', PHILLIES: 'PHI', PHILADELPHIA: 'PHI',
+    PIT: 'PIT', PIRATES: 'PIT', PITTSBURGH: 'PIT',
+    SDP: 'SDP', SD: 'SDP', PADRES: 'SDP', SAN DIEGO: 'SDP',
+    SEA: 'SEA', SEATTLE: 'SEA', MARINERS: 'SEA',
+    SFG: 'SFG', SF: 'SFG', GIANTS: 'SFG', SAN FRANCISCO: 'SFG',
+    STL: 'STL', ST LOUIS: 'STL', CARDINALS: 'STL',
+    TB: 'TBR', TBR: 'TBR', TAMPA BAY: 'TBR', RAYS: 'TBR',
+    TEX: 'TEX', TEXAS: 'TEX', RANGERS: 'TEX',
+    TOR: 'TOR', TORONTO: 'TOR', BLUE JAYS: 'TOR', BLUEJAYS: 'TOR',
+    WSN: 'WSN', WSH: 'WSN', WASHINGTON: 'WSN', NATIONALS: 'WSN'
+  };
+  return map[key] || key;
+}
+
+async function fetchBrSplitRanks(teamCode, hand = 'lhp', season = CURRENT_SEASON) {
+  const cacheKey = `br_${teamCode}_${hand}_${season}`;
+  if (mlbCache[cacheKey]) return mlbCache[cacheKey];
+  try {
+    const resp = await fetch(`/api/proxy?source=br&hand=${encodeURIComponent(hand)}&season=${encodeURIComponent(season)}&team=${encodeURIComponent(teamCode)}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    mlbCache[cacheKey] = data;
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 // ── Odds data processing ─────────────────────────────────────────────────────
@@ -973,11 +1057,12 @@ async function loadMLBData(name){
 
   // Find today's game for this pitcher
   const todayGame = findTodayGame(schedule, d.awayTeam, d.homeTeam);
+  const pitcherHand = player.throws ? String(player.throws).toUpperCase() : null;
 
   if(todayGame){
     const opponent = await renderBvP(name, mlbId, todayGame);
     if (opponent) {
-      await renderMatchupContext(name, todayGame, opponent.id, opponent.name, todayGame.venue?.name || '');
+      await renderMatchupContext(name, todayGame, opponent.id, opponent.name, todayGame.venue?.name || '', pitcherHand, opponent.abbreviation);
     }
   } else {
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">Lineup not yet available</div>`;
@@ -1078,18 +1163,23 @@ async function renderBvP(name, pitcherId, game){
   const dHomeNorm = normTeam(d.homeTeam||'');
 
   // Find opposing team
-  let oppTeamId, oppTeamName, ownTeamName;
+  let oppTeamId, oppTeamName, ownTeamName, oppTeamAbbreviation;
   if(homeProbable && name.toLowerCase().includes(homeProbable.split(' ').pop().toLowerCase())){
     oppTeamId = awayId; oppTeamName = awayName; ownTeamName = homeName;
+    oppTeamAbbreviation = game.teams?.away?.team?.abbreviation;
   } else if(awayProbable && name.toLowerCase().includes(awayProbable.split(' ').pop().toLowerCase())){
     oppTeamId = homeId; oppTeamName = homeName; ownTeamName = awayName;
+    oppTeamAbbreviation = game.teams?.home?.team?.abbreviation;
   } else if (dHomeNorm && dHomeNorm === homeNorm) {
     oppTeamId = awayId; oppTeamName = awayName; ownTeamName = homeName;
+    oppTeamAbbreviation = game.teams?.away?.team?.abbreviation;
   } else if (dAwayNorm && dAwayNorm === awayNorm) {
     oppTeamId = homeId; oppTeamName = homeName; ownTeamName = awayName;
+    oppTeamAbbreviation = game.teams?.home?.team?.abbreviation;
   } else {
     // fallback: use away team as opponent
     oppTeamId = awayId; oppTeamName = awayName; ownTeamName = homeName;
+    oppTeamAbbreviation = game.teams?.away?.team?.abbreviation;
   }
 
   // Set tab default
@@ -1152,7 +1242,7 @@ async function renderBvP(name, pitcherId, game){
   <div style="margin-top:8px;font-size:9px;color:var(--dim);font-family:'JetBrains Mono',monospace">
     <span style="color:var(--red)">■</span> AVG ≥ .300 &nbsp; <span style="color:var(--green)">■</span> AVG &lt; .200 &nbsp;&nbsp; K% bar = strikeout rate vs this pitcher
   </div>`;
-  return { id: oppTeamId, name: oppTeamName };
+  return { id: oppTeamId, name: oppTeamName, abbreviation: oppTeamAbbreviation };
 }
 
 // ── Chart ────────────────────────────────────────────────────────────────────

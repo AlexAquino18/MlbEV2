@@ -6,7 +6,27 @@ function getTtlMs(source, path) {
   if (source === 'odds' && path === '/odds') return 15 * 60 * 1000;
   if (source === 'odds' && path === '/odds/multi') return 15 * 60 * 1000;
   if (source === 'mlb' && path === '/api/v1/schedule') return 10 * 60 * 1000;
+  if (source === 'br') return 30 * 60 * 1000;
   return 0;
+}
+
+function parseBrSplitRanks(html) {
+  const tableMatch = html.match(/<table[^>]+id="split1"[^>]*>([\s\S]*?)<\/table>/i);
+  if (!tableMatch) return [];
+  const rows = Array.from(tableMatch[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
+  return rows.map(match => {
+    const row = match[1];
+    const rank = Number((row.match(/data-stat="ranker"[^>]*>(\d+)/) || [])[1] || 0);
+    const team = (row.match(/data-stat="team"[^>]*>([^<]+)/) || [])[1] || null;
+    const games = Number((row.match(/data-stat="G"[^>]*>(\d+)/) || [])[1] || 0);
+    const ab = Number((row.match(/data-stat="AB"[^>]*>(\d+)/) || [])[1] || 0);
+    const r = Number((row.match(/data-stat="R"[^>]*>(\d+)/) || [])[1] || 0);
+    const h = Number((row.match(/data-stat="H"[^>]*>(\d+)/) || [])[1] || 0);
+    const hr = Number((row.match(/data-stat="HR"[^>]*>(\d+)/) || [])[1] || 0);
+    const ops = (row.match(/data-stat="onbase_plus_slugging"[^>]*>([^<]+)/) || [])[1] || null;
+    const rankValue = rank || null;
+    return team ? { rank: rankValue, team: team.trim(), games, ab, r, h, hr, ops } : null;
+  }).filter(Boolean);
 }
 
 export default async function handler(req, res) {
@@ -18,7 +38,12 @@ export default async function handler(req, res) {
 
   const ttlMs = getTtlMs(source, path);
   let url;
-  if (source === 'mlb') {
+  if (source === 'br') {
+    const { hand = 'lhp', season = '2026' } = rest;
+    const handKey = String(hand).toLowerCase().startsWith('r') ? 'RHP' : 'LHP';
+    const params = new URLSearchParams({ full: '1', params: `plato|vs ${handKey}|ML|${season}|bat|AB|` });
+    url = `https://www.baseball-reference.com/split_stats_lg.cgi?${params}`;
+  } else if (source === 'mlb') {
     // MLB Stats API - free, no key needed
     const params = new URLSearchParams(rest);
     url = `https://statsapi.mlb.com${path}${params.toString() ? '?' + params : ''}`;
@@ -41,11 +66,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const upstream = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-    });
+    const headers = { 'User-Agent': 'Mozilla/5.0' };
+    if (source === 'br') headers.Accept = 'text/html';
+    else headers.Accept = 'application/json';
+
+    const upstream = await fetch(url, { headers });
     const body = await upstream.text();
-    const contentType = upstream.headers.get('content-type') || 'application/json';
+    const contentType = upstream.headers.get('content-type') || (source === 'br' ? 'text/html' : 'application/json');
 
     if (upstream.ok && ttlMs > 0) {
       cache.set(url, { time: Date.now(), status: upstream.status, body, contentType });
@@ -61,6 +88,27 @@ export default async function handler(req, res) {
            .send(stale.body);
         return;
       }
+    }
+
+    if (source === 'br' && upstream.ok) {
+      const rankings = parseBrSplitRanks(body);
+      const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
+      const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
+      const json = {
+        source: 'br',
+        hand: String(rest.hand || 'lhp').toLowerCase(),
+        season: String(rest.season || '2026'),
+        team: teamCode,
+        rank: teamData?.rank ?? null,
+        teamStats: teamData,
+        rankings
+      };
+      res.status(upstream.status)
+         .setHeader('Content-Type', 'application/json')
+         .setHeader('Cache-Control', ttlMs > 0 ? 'public, s-maxage=900, stale-while-revalidate=3600' : 'public, s-maxage=300')
+         .setHeader('X-Proxy-Cache', 'MISS')
+         .json(json);
+      return;
     }
 
     res.status(upstream.status)
