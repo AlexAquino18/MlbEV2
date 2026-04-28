@@ -187,6 +187,20 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
 .matchup-card .metric:last-child{border-bottom:none}
 .matchup-card .m-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
 .matchup-card .m-value{font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:700;color:var(--text)}
+.reason-list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+.reason-list li{font-size:11px;line-height:1.45;color:var(--text)}
+.rankings-panel{margin-top:16px;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:14px;background:rgba(255,255,255,.02)}
+.rankings-top{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.mini-btns{display:flex;gap:6px;flex-wrap:wrap}
+.mini-btn{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.10);color:var(--dim);font-family:'JetBrains Mono',monospace;font-size:10px;padding:6px 10px;border-radius:999px;cursor:pointer}
+.mini-btn.active{color:var(--text);border-color:rgba(57,216,255,.35);background:rgba(57,216,255,.14)}
+.rankings-table-wrap{max-height:320px;overflow:auto;border:1px solid rgba(255,255,255,.06);border-radius:12px}
+.rankings-table{width:100%;border-collapse:collapse}
+.rankings-table th,.rankings-table td{padding:9px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;border-bottom:1px solid rgba(255,255,255,.05);text-align:right;white-space:nowrap}
+.rankings-table th:first-child,.rankings-table td:first-child{text-align:left}
+.rankings-table tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+.rankings-table tr:last-child td{border-bottom:none}
+.is-focus-team td{background:rgba(249,203,60,.10)!important}
 
 /* ── Book grid ── */
 .book-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
@@ -291,6 +305,8 @@ let pitchers={}, selected=null, sortMode='move', refreshTmr=null;
 let activeBooks={}, chartState=null;
 let mlbCache={}; // keyed by pitcher name
 let lineupTab={}; // per pitcher: 'away'|'home'
+let splitRankingsSort='worst';
+let splitRankingsHand='rhp';
 
 // ── MLB Stats API helpers ────────────────────────────────────────────────────
 async function mlbFetch(path, params={}) {
@@ -575,13 +591,18 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
   const rankGood = splitRank != null && splitRank <= 10;
   const rankBad = splitRank != null && splitRank >= 21;
 
+  const reasons = [];
+  reasons.push(`Opponent offense: AVG ${hit?.avg || '—'}, OBP ${hit?.obp || '—'}, OPS ${hit?.ops || '—'}.`);
+  reasons.push(`Pitcher baseline: ERA ${pit?.era || '—'}, WHIP ${pit?.whip || '—'}, K/9 ${pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—'}.`);
+  if (splitRank != null) reasons.push(`Split rank vs ${splitHand || 'handedness'} is ${splitRank}/30 (1 = most strikeout-prone, 30 = toughest to K).`);
+
   if (rankGood || rankBad) {
     const label = rankGood ? 'GOOD MATCHUP' : 'BAD MATCHUP';
     const tone = rankGood ? 'good' : 'bad';
     const desc = rankGood
       ? `Baseball-Reference rank ${splitRank}/30 ${rankHandLabel} shows the opposing lineup is weak against this handedness.`
       : `Baseball-Reference rank ${splitRank}/30 ${rankHandLabel} shows the opposing lineup is strong against this handedness.`;
-    return { label, tone, desc };
+    return { label, tone, desc, reasons };
   }
 
   // Adjust delta with split rank if available (lower rank = better matchup for pitcher)
@@ -597,7 +618,31 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
       ? `Matchup is tougher. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} adds concern.` : 'Opponent offense and starter profile are a challenge.'}`
       : `This matchup is balanced. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} is middling.` : 'Watch the line and recent trends.'}`;
 
-  return { label, tone, desc };
+  return { label, tone, desc, reasons };
+}
+
+function sortSplitRankings(rankings, order='worst'){
+  const dir = order === 'best' ? 1 : -1;
+  return [...(rankings || [])].sort((a,b)=>{
+    const ar = Number.isFinite(a?.rank) ? a.rank : 999;
+    const br = Number.isFinite(b?.rank) ? b.rank : 999;
+    return (ar - br) * dir;
+  });
+}
+
+function buildSplitRankingsRows(rankings, focusTeamCode){
+  return rankings.map(r=>{
+    const isFocus = focusTeamCode && r.team === focusTeamCode;
+    return `<tr class="${isFocus ? 'is-focus-team' : ''}">
+      <td>${r.rank ?? '—'}</td>
+      <td>${r.team || '—'}</td>
+      <td>${r.kPct != null ? `${r.kPct}%` : '—'}</td>
+      <td>${r.so ?? '—'}</td>
+      <td>${r.hr ?? '—'}</td>
+      <td>${r.r ?? '—'}</td>
+      <td>${r.games ?? '—'}</td>
+    </tr>`;
+  }).join('');
 }
 
 async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pitcherHand, teamAbbrev) {
@@ -627,12 +672,21 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
   const vsR = splitR?.teamStats?.rank ?? '—';
   const lOps = splitL?.teamStats?.ops || '—';
   const rOps = splitR?.teamStats?.ops || '—';
+  const lRankings = Array.isArray(splitL?.rankings) ? splitL.rankings : [];
+  const rRankings = Array.isArray(splitR?.rankings) ? splitR.rankings : [];
+  if (splitRankingsHand !== 'rhp' && splitRankingsHand !== 'lhp') splitRankingsHand = activeHand === 'LHP' ? 'lhp' : 'rhp';
+  const useLhp = splitRankingsHand === 'lhp';
+  const activeRankings = useLhp ? lRankings : rRankings;
+  const ordered = sortSplitRankings(activeRankings, splitRankingsSort);
+  const reasonList = (matchup.reasons || []).map(txt => `<li>${txt}</li>`).join('');
+  const focusCode = getBrTeamCode(teamAbbrev || teamName);
 
   el.innerHTML = `
   <div class="sec-hdr">GAME MATCHUP CONTEXT</div>
   <div class="matchup-hero">
     <span class="matchup-badge ${matchup.tone}">${matchup.label}</span>
     <div class="matchup-copy">${matchup.desc}</div>
+    <ul class="reason-list">${reasonList}</ul>
   </div>
   <div class="matchup-stats">
     <div class="matchup-card">
@@ -670,7 +724,34 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
     <div class="szn-card"><div class="szn-v">${era}</div><div class="szn-l">Season ERA</div></div>
     <div class="szn-card"><div class="szn-v">${whip}</div><div class="szn-l">Season WHIP</div></div>
   </div>
+  <div class="rankings-panel">
+    <div class="rankings-top">
+      <div class="sec-hdr" style="margin:0">K% SPLIT RANKINGS 1-30</div>
+      <div class="mini-btns">
+        <button class="mini-btn ${useLhp ? '' : 'active'}" onclick="setSplitRankingsView('rhp')">VS RHP</button>
+        <button class="mini-btn ${useLhp ? 'active' : ''}" onclick="setSplitRankingsView('lhp')">VS LHP</button>
+        <button class="mini-btn ${splitRankingsSort === 'worst' ? 'active' : ''}" onclick="setSplitRankingsOrder('worst')">WORST → BEST</button>
+        <button class="mini-btn ${splitRankingsSort === 'best' ? 'active' : ''}" onclick="setSplitRankingsOrder('best')">BEST → WORST</button>
+      </div>
+    </div>
+    <div class="rankings-table-wrap">
+      <table class="rankings-table">
+        <thead><tr><th>RANK</th><th>TEAM</th><th>K%</th><th>SO</th><th>HR</th><th>R</th><th>G</th></tr></thead>
+        <tbody>${buildSplitRankingsRows(ordered, focusCode)}</tbody>
+      </table>
+    </div>
+  </div>
   `;
+}
+
+function setSplitRankingsView(hand){
+  splitRankingsHand = hand === 'lhp' ? 'lhp' : 'rhp';
+  if(selected && pitchers[selected]) loadMLBData(selected);
+}
+
+function setSplitRankingsOrder(order){
+  splitRankingsSort = order === 'best' ? 'best' : 'worst';
+  if(selected && pitchers[selected]) loadMLBData(selected);
 }
 
 // Batter career vs pitcher splits

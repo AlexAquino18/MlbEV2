@@ -19,13 +19,16 @@ function parseBrSplitRanks(html) {
     const rank = Number((row.match(/data-stat="ranker"[^>]*>(\d+)/) || [])[1] || 0);
     const team = (row.match(/data-stat="team"[^>]*>([^<]+)/) || [])[1] || null;
     const games = Number((row.match(/data-stat="G"[^>]*>(\d+)/) || [])[1] || 0);
+    const pa = Number((row.match(/data-stat="PA"[^>]*>(\d+)/) || [])[1] || 0);
     const ab = Number((row.match(/data-stat="AB"[^>]*>(\d+)/) || [])[1] || 0);
     const r = Number((row.match(/data-stat="R"[^>]*>(\d+)/) || [])[1] || 0);
     const h = Number((row.match(/data-stat="H"[^>]*>(\d+)/) || [])[1] || 0);
     const hr = Number((row.match(/data-stat="HR"[^>]*>(\d+)/) || [])[1] || 0);
+    const so = Number((row.match(/data-stat="SO"[^>]*>(\d+)/) || [])[1] || 0);
     const ops = (row.match(/data-stat="onbase_plus_slugging"[^>]*>([^<]+)/) || [])[1] || null;
+    const kPct = pa > 0 ? ((so / pa) * 100).toFixed(1) : null;
     const rankValue = rank || null;
-    return team ? { rank: rankValue, team: team.trim(), games, ab, r, h, hr, ops } : null;
+    return team ? { rank: rankValue, team: team.trim(), games, pa, ab, r, h, hr, so, kPct, ops } : null;
   }).filter(Boolean);
 }
 
