@@ -562,8 +562,11 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
   const whip = parseFloat(pit?.whip) || 3.5;
   const k9 = parseFloat(pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || 0);
 
-  const offense = avg * 1100 + obp * 260 + ops * 60;
-  const pitcher = Math.max(0, 170 - era * 25) + Math.max(0, 70 - whip * 12) + k9 * 12;
+  // Normalize offense score (0-100 scale)
+  const offense = Math.min(100, Math.max(0, (avg * 100 + obp * 50 + (ops - 0.6) * 25)));
+  // Normalize pitcher score (0-100 scale)
+  const pitcher = Math.min(100, Math.max(0, (9 - era) * 8 + (3.5 - whip) * 15 + Math.min(k9, 12) * 5));
+
   const delta = pitcher - offense;
 
   const rankLabel = splitRank != null ? `Rank ${splitRank}` : null;
@@ -581,16 +584,18 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
     return { label, tone, desc };
   }
 
-  const score = delta + (splitRank != null ? (16 - splitRank) * 1.1 : 0);
-  const good = score >= 25;
-  const bad = score <= -15;
+  // Adjust delta with split rank if available (lower rank = better matchup for pitcher)
+  const adjustedDelta = delta + (splitRank != null ? (15 - splitRank) * 0.8 : 0);
+
+  const good = adjustedDelta >= 15;
+  const bad = adjustedDelta <= -15;
   const label = good ? 'GOOD MATCHUP' : bad ? 'BAD MATCHUP' : 'NEUTRAL MATCHUP';
   const tone = good ? 'good' : bad ? 'bad' : 'neutral';
   const desc = good
-    ? `Matchup is favorable. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} helps confirm this.` : 'Offense and pitcher splits line up well.'}`
+    ? `Matchup is favorable. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} helps confirm this.` : 'Offense and pitcher profiles align well.'}`
     : bad
-      ? `Matchup is tougher. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} pulls this matchup down.` : 'Opponent offense and starter profile are a concern.'}`
-      : `This matchup is balanced. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} is middling and season stats are neutral.` : 'Watch the line and starter command versus opponent contact.'}`;
+      ? `Matchup is tougher. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} adds concern.` : 'Opponent offense and starter profile are a challenge.'}`
+      : `This matchup is balanced. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} is middling.` : 'Watch the line and recent trends.'}`;
 
   return { label, tone, desc };
 }
