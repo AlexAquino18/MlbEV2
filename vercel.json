@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/proxy.js": {
+      "includeFiles": "br_*.html"
+    }
+  },
   "rewrites": [
     { "source": "/api/proxy", "destination": "/api/proxy.js" }
   ]
