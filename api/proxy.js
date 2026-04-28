@@ -10,6 +10,12 @@ function getTtlMs(source, path) {
   return 0;
 }
 
+function buildBrUrl(hand, season) {
+  const handKey = String(hand).toLowerCase().startsWith('r') ? 'RHP' : 'LHP';
+  const params = new URLSearchParams({ full: '1', params: `plato|vs ${handKey}|ML|${season}|bat|AB|` });
+  return `https://www.baseball-reference.com/split_stats_lg.cgi?${params}`;
+}
+
 function parseBrSplitRanks(html) {
   const stripTags = value => String(value || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim();
   const getCellRaw = (row, stat) => {
@@ -55,10 +61,8 @@ export default async function handler(req, res) {
   const ttlMs = getTtlMs(source, path);
   let url;
   if (source === 'br') {
-    const { hand = 'lhp', season = '2026' } = rest;
-    const handKey = String(hand).toLowerCase().startsWith('r') ? 'RHP' : 'LHP';
-    const params = new URLSearchParams({ full: '1', params: `plato|vs ${handKey}|ML|${season}|bat|AB|` });
-    url = `https://www.baseball-reference.com/split_stats_lg.cgi?${params}`;
+    const { hand = 'lhp', season = String(new Date().getFullYear()) } = rest;
+    url = buildBrUrl(hand, season);
   } else if (source === 'mlb') {
     // MLB Stats API - free, no key needed
     const params = new URLSearchParams(rest);
@@ -86,6 +90,53 @@ export default async function handler(req, res) {
     if (source === 'br') headers.Accept = 'text/html';
     else headers.Accept = 'application/json';
 
+    if (source === 'br') {
+      const requestedSeason = Number(rest.season || new Date().getFullYear());
+      const seasonCandidates = [requestedSeason, requestedSeason - 1, requestedSeason - 2]
+        .filter((v, i, arr) => Number.isFinite(v) && v > 2000 && arr.indexOf(v) === i);
+      let chosenBody = '';
+      let chosenStatus = 404;
+      let chosenContentType = 'text/html';
+      let chosenSeason = String(requestedSeason);
+      let rankings = [];
+
+      for (const s of seasonCandidates) {
+        const tryUrl = buildBrUrl(rest.hand || 'lhp', s);
+        const upstream = await fetch(tryUrl, { headers });
+        const body = await upstream.text();
+        const contentType = upstream.headers.get('content-type') || 'text/html';
+        const parsed = upstream.ok ? parseBrSplitRanks(body) : [];
+
+        chosenBody = body;
+        chosenStatus = upstream.status;
+        chosenContentType = contentType;
+        chosenSeason = String(s);
+        rankings = parsed;
+
+        if (upstream.ok && parsed.length) break;
+      }
+
+      const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
+      const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
+      const okWithData = rankings.length > 0;
+      res.status(okWithData ? 200 : chosenStatus)
+         .setHeader('Content-Type', 'application/json')
+         .setHeader('Cache-Control', ttlMs > 0 ? 'public, s-maxage=900, stale-while-revalidate=3600' : 'public, s-maxage=300')
+         .setHeader('X-Proxy-Cache', 'MISS')
+         .json({
+           source: 'br',
+           hand: String(rest.hand || 'lhp').toLowerCase(),
+           season: chosenSeason,
+           requestedSeason: String(rest.season || requestedSeason),
+           team: teamCode,
+           rank: teamData?.rank ?? null,
+           teamStats: teamData,
+           rankings,
+           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason)
+         });
+      return;
+    }
+
     const upstream = await fetch(url, { headers });
     const body = await upstream.text();
     const contentType = upstream.headers.get('content-type') || (source === 'br' ? 'text/html' : 'application/json');
@@ -104,27 +155,6 @@ export default async function handler(req, res) {
            .send(stale.body);
         return;
       }
-    }
-
-    if (source === 'br' && upstream.ok) {
-      const rankings = parseBrSplitRanks(body);
-      const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
-      const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
-      const json = {
-        source: 'br',
-        hand: String(rest.hand || 'lhp').toLowerCase(),
-        season: String(rest.season || '2026'),
-        team: teamCode,
-        rank: teamData?.rank ?? null,
-        teamStats: teamData,
-        rankings
-      };
-      res.status(upstream.status)
-         .setHeader('Content-Type', 'application/json')
-         .setHeader('Cache-Control', ttlMs > 0 ? 'public, s-maxage=900, stale-while-revalidate=3600' : 'public, s-maxage=300')
-         .setHeader('X-Proxy-Cache', 'MISS')
-         .json(json);
-      return;
     }
 
     res.status(upstream.status)
