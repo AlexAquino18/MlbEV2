@@ -676,8 +676,10 @@ function renderSplitRankingsSection(name){
   const useLhp = splitRankingsHand === 'lhp';
   const activeRankings = useLhp ? ctx.lRankings : ctx.rRankings;
   const ordered = sortSplitRankings(activeRankings, splitRankingsSort);
+  const usingSynthetic = ordered.some(r => r?.synthetic);
   el.innerHTML = `
     <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
+    ${usingSynthetic ? '<div class="ndm" style="padding:0 0 10px 0;font-size:10px;text-align:left">Using fallback ranking set while live split feed is unavailable.</div>' : ''}
     <div class="rankings-panel" style="margin-top:0">
       <div class="rankings-top">
         <div class="mini-btns">
@@ -713,9 +715,11 @@ function renderGlobalSplitRankingsView(){
   const useLhp = splitRankingsHand === 'lhp';
   const active = useLhp ? globalSplitData.lhp : globalSplitData.rhp;
   const ordered = sortSplitRankings(active, splitRankingsSort);
+  const usingSynthetic = ordered.some(r => r?.synthetic);
   detail.innerHTML = `
     <div class="sec">
       <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
+      ${usingSynthetic ? '<div class="ndm" style="padding:0 0 10px 0;font-size:10px;text-align:left">Using fallback ranking set while live split feed is unavailable.</div>' : ''}
       <div class="rankings-panel" style="margin-top:0">
         <div class="rankings-top">
           <div class="mini-btns">

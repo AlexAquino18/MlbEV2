@@ -34,6 +34,33 @@ function loadBundledBrHtml(hand) {
   return '';
 }
 
+function buildSyntheticRankings(hand = 'lhp') {
+  const teams = [
+    'ARI','ATL','BAL','BOS','CHC','CHW','CIN','CLE','COL','DET',
+    'HOU','KCR','LAA','LAD','MIA','MIL','MIN','NYM','NYY','OAK',
+    'PHI','PIT','SDP','SEA','SFG','STL','TBR','TEX','TOR','WSN'
+  ];
+  const ordered = String(hand).toLowerCase().startsWith('r') ? [...teams].reverse() : teams;
+  return ordered.map((team, idx) => {
+    const rank = idx + 1;
+    const kPctNum = Math.max(15, 25 - (idx * 0.3));
+    return {
+      rank,
+      team,
+      games: 162,
+      pa: 6200,
+      ab: 5500,
+      r: Math.max(500, 780 - idx * 8),
+      h: Math.max(1200, 1520 - idx * 9),
+      hr: Math.max(110, 240 - idx * 4),
+      so: Math.round((kPctNum / 100) * 6200),
+      kPct: kPctNum.toFixed(1),
+      ops: (0.640 + ((30 - rank) * 0.007)).toFixed(3),
+      synthetic: true
+    };
+  });
+}
+
 function parseBrSplitRanks(html) {
   const stripTags = value => String(value || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim();
   const getCellRaw = (row, stat) => {
@@ -142,6 +169,7 @@ export default async function handler(req, res) {
           bundledUsed = rankings.length > 0;
         }
       }
+      if (!rankings.length) rankings = buildSyntheticRankings(rest.hand || 'lhp');
 
       const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
       const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
@@ -160,7 +188,7 @@ export default async function handler(req, res) {
            rank: teamData?.rank ?? null,
            teamStats: teamData,
            rankings,
-           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason) || bundledUsed,
+           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason) || bundledUsed || rankings.some(r => r.synthetic),
            upstreamStatus: chosenStatus
          });
       return;
