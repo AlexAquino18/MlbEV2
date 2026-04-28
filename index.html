@@ -307,6 +307,7 @@ let mlbCache={}; // keyed by pitcher name
 let lineupTab={}; // per pitcher: 'away'|'home'
 let splitRankingsSort='worst';
 let splitRankingsHand='rhp';
+let splitRankingsContext={}; // per pitcher cached split rankings payload
 
 // ── MLB Stats API helpers ────────────────────────────────────────────────────
 async function mlbFetch(path, params={}) {
@@ -631,6 +632,9 @@ function sortSplitRankings(rankings, order='worst'){
 }
 
 function buildSplitRankingsRows(rankings, focusTeamCode){
+  if(!Array.isArray(rankings) || !rankings.length){
+    return `<tr><td colspan="7" style="text-align:center;color:var(--dim)">No split ranking data available.</td></tr>`;
+  }
   return rankings.map(r=>{
     const isFocus = focusTeamCode && r.team === focusTeamCode;
     return `<tr class="${isFocus ? 'is-focus-team' : ''}">
@@ -643,6 +647,38 @@ function buildSplitRankingsRows(rankings, focusTeamCode){
       <td>${r.games ?? '—'}</td>
     </tr>`;
   }).join('');
+}
+
+function renderSplitRankingsSection(name){
+  const el = document.getElementById('sec-split-ranks');
+  if(!el || selected !== name) return;
+  const ctx = splitRankingsContext[name];
+  if(!ctx){
+    el.innerHTML = `<div class="sec-hdr">K% SPLIT RANKINGS 1-30</div><div class="ndm" style="padding:8px 0;font-size:10px">Split rankings will load when opponent matchup is detected.</div>`;
+    return;
+  }
+  const useLhp = splitRankingsHand === 'lhp';
+  const activeRankings = useLhp ? ctx.lRankings : ctx.rRankings;
+  const ordered = sortSplitRankings(activeRankings, splitRankingsSort);
+  el.innerHTML = `
+    <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
+    <div class="rankings-panel" style="margin-top:0">
+      <div class="rankings-top">
+        <div class="mini-btns">
+          <button class="mini-btn ${useLhp ? '' : 'active'}" onclick="setSplitRankingsView('rhp')">VS RHP</button>
+          <button class="mini-btn ${useLhp ? 'active' : ''}" onclick="setSplitRankingsView('lhp')">VS LHP</button>
+          <button class="mini-btn ${splitRankingsSort === 'worst' ? 'active' : ''}" onclick="setSplitRankingsOrder('worst')">WORST → BEST</button>
+          <button class="mini-btn ${splitRankingsSort === 'best' ? 'active' : ''}" onclick="setSplitRankingsOrder('best')">BEST → WORST</button>
+        </div>
+      </div>
+      <div class="rankings-table-wrap">
+        <table class="rankings-table">
+          <thead><tr><th>RANK</th><th>TEAM</th><th>K%</th><th>SO</th><th>HR</th><th>R</th><th>G</th></tr></thead>
+          <tbody>${buildSplitRankingsRows(ordered, ctx.focusCode)}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pitcherHand, teamAbbrev) {
@@ -674,12 +710,10 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
   const rOps = splitR?.teamStats?.ops || '—';
   const lRankings = Array.isArray(splitL?.rankings) ? splitL.rankings : [];
   const rRankings = Array.isArray(splitR?.rankings) ? splitR.rankings : [];
-  if (splitRankingsHand !== 'rhp' && splitRankingsHand !== 'lhp') splitRankingsHand = activeHand === 'LHP' ? 'lhp' : 'rhp';
-  const useLhp = splitRankingsHand === 'lhp';
-  const activeRankings = useLhp ? lRankings : rRankings;
-  const ordered = sortSplitRankings(activeRankings, splitRankingsSort);
   const reasonList = (matchup.reasons || []).map(txt => `<li>${txt}</li>`).join('');
   const focusCode = getBrTeamCode(teamAbbrev || teamName);
+  splitRankingsContext[name] = { lRankings, rRankings, focusCode };
+  renderSplitRankingsSection(name);
 
   el.innerHTML = `
   <div class="sec-hdr">GAME MATCHUP CONTEXT</div>
@@ -724,34 +758,17 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
     <div class="szn-card"><div class="szn-v">${era}</div><div class="szn-l">Season ERA</div></div>
     <div class="szn-card"><div class="szn-v">${whip}</div><div class="szn-l">Season WHIP</div></div>
   </div>
-  <div class="rankings-panel">
-    <div class="rankings-top">
-      <div class="sec-hdr" style="margin:0">K% SPLIT RANKINGS 1-30</div>
-      <div class="mini-btns">
-        <button class="mini-btn ${useLhp ? '' : 'active'}" onclick="setSplitRankingsView('rhp')">VS RHP</button>
-        <button class="mini-btn ${useLhp ? 'active' : ''}" onclick="setSplitRankingsView('lhp')">VS LHP</button>
-        <button class="mini-btn ${splitRankingsSort === 'worst' ? 'active' : ''}" onclick="setSplitRankingsOrder('worst')">WORST → BEST</button>
-        <button class="mini-btn ${splitRankingsSort === 'best' ? 'active' : ''}" onclick="setSplitRankingsOrder('best')">BEST → WORST</button>
-      </div>
-    </div>
-    <div class="rankings-table-wrap">
-      <table class="rankings-table">
-        <thead><tr><th>RANK</th><th>TEAM</th><th>K%</th><th>SO</th><th>HR</th><th>R</th><th>G</th></tr></thead>
-        <tbody>${buildSplitRankingsRows(ordered, focusCode)}</tbody>
-      </table>
-    </div>
-  </div>
   `;
 }
 
 function setSplitRankingsView(hand){
   splitRankingsHand = hand === 'lhp' ? 'lhp' : 'rhp';
-  if(selected && pitchers[selected]) loadMLBData(selected);
+  if(selected && pitchers[selected]) renderSplitRankingsSection(selected);
 }
 
 function setSplitRankingsOrder(order){
   splitRankingsSort = order === 'best' ? 'best' : 'worst';
-  if(selected && pitchers[selected]) loadMLBData(selected);
+  if(selected && pitchers[selected]) renderSplitRankingsSection(selected);
 }
 
 // Batter career vs pitcher splits
@@ -1063,6 +1080,12 @@ function renderDetail(name){
     <div class="mini-load"><div class="mini-ring"></div>Loading matchup data...</div>
   </div>
 
+  <!-- Split rankings -->
+  <div class="sec" id="sec-split-ranks">
+    <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
+    <div class="mini-load"><div class="mini-ring"></div>Loading split rankings...</div>
+  </div>
+
   <!-- Odds chart -->
   <div class="sec">
     <div class="sec-hdr">ODDS MOVEMENT · Over ${cl??'—'}</div>
@@ -1098,6 +1121,7 @@ async function loadMLBData(name){
     document.getElementById('sec-szn').innerHTML=`<div class="sec-hdr">PLAYER INFO</div><div class="ndm" style="padding:8px 0;font-size:10px">${d.propType||'Strikeout prop'} is available, but pitcher-only stat panels are hidden for non-pitcher props.</div>`;
     document.getElementById('sec-gl').innerHTML=`<div class="sec-hdr">RECENT HISTORY</div><div class="ndm" style="padding:8px 0;font-size:10px">Game-log pitch data is only shown for pitcher strikeout props.</div>`;
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">MATCHUP</div><div class="ndm" style="padding:8px 0;font-size:10px">Additional matchup panels are only shown for pitcher strikeout props.</div>`;
+    document.getElementById('sec-split-ranks').innerHTML=`<div class="sec-hdr">K% SPLIT RANKINGS 1-30</div><div class="ndm" style="padding:8px 0;font-size:10px">Split rankings are shown for pitcher strikeout props only.</div>`;
     return;
   }
 
@@ -1107,6 +1131,7 @@ async function loadMLBData(name){
     document.getElementById('sec-szn').innerHTML=`<div class="sec-hdr">${CURRENT_SEASON} SEASON STATS</div><div class="ndm" style="padding:8px 0;font-size:10px">Player not found in MLB API</div>`;
     document.getElementById('sec-gl').innerHTML=`<div class="sec-hdr">LAST 10 STARTS</div><div class="ndm" style="padding:8px 0;font-size:10px">No data available</div>`;
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">No data available</div>`;
+    document.getElementById('sec-split-ranks').innerHTML=`<div class="sec-hdr">K% SPLIT RANKINGS 1-30</div><div class="ndm" style="padding:8px 0;font-size:10px">No split ranking data available</div>`;
     return;
   }
 
@@ -1149,10 +1174,13 @@ async function loadMLBData(name){
     const opponent = await renderBvP(name, mlbId, todayGame);
     if (opponent) {
       await renderMatchupContext(name, todayGame, opponent.id, opponent.name, todayGame.venue?.name || '', pitcherHand, opponent.abbreviation);
+      renderSplitRankingsSection(name);
     }
   } else {
     document.getElementById('sec-bvp').innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER</div><div class="ndm" style="padding:8px 0;font-size:10px">Lineup not yet available</div>`;
     document.getElementById('sec-matchup').innerHTML=`<div class="sec-hdr">GAME MATCHUP CONTEXT</div><div class="ndm" style="padding:8px 0;font-size:10px">Matchup overview not available</div>`;
+    splitRankingsContext[name] = null;
+    renderSplitRankingsSection(name);
   }
 }
 
