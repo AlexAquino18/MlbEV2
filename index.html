@@ -69,6 +69,7 @@ header{flex-shrink:0;padding:18px 26px;display:flex;align-items:center;justify-c
 
 /* ── Layout ── */
 .layout{flex:1;display:flex;overflow:hidden;min-height:0}
+.layout.ranks-mode .plist{display:none}
 
 /* ── Player list ── */
 .plist{width:320px;flex-shrink:0;border-right:1px solid rgba(255,255,255,.06);overflow-y:auto;background:rgba(7,10,18,.95);box-shadow:inset 0 0 0 1px rgba(255,255,255,.01)}
@@ -247,6 +248,7 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
 <div class="controls">
   <span class="cl">SORT</span>
   <button class="sb active" id="sort-move" onclick="setSort('move')">ODDS MOVE</button>
+  <button class="sb" id="tab-ranks" onclick="setMainTab('ranks')">K% SPLIT RANKS</button>
   <button class="sb" id="sort-sharp" onclick="setSort('sharp')">SHARP</button>
   <button class="sb" id="sort-line" onclick="setSort('line')">K LINE</button>
   <button class="sb" id="sort-name" onclick="setSort('name')">NAME</button>
@@ -308,6 +310,8 @@ let lineupTab={}; // per pitcher: 'away'|'home'
 let splitRankingsSort='worst';
 let splitRankingsHand='rhp';
 let splitRankingsContext={}; // per pitcher cached split rankings payload
+let mainTab='props'; // 'props' | 'ranks'
+let globalSplitData={ lhp:[], rhp:[] };
 
 // ── MLB Stats API helpers ────────────────────────────────────────────────────
 async function mlbFetch(path, params={}) {
@@ -649,6 +653,18 @@ function buildSplitRankingsRows(rankings, focusTeamCode){
   }).join('');
 }
 
+function resolveSplitTeamStats(splitData, teamCode){
+  if (splitData?.teamStats) return splitData.teamStats;
+  const rankings = Array.isArray(splitData?.rankings) ? splitData.rankings : [];
+  if (!rankings.length) return null;
+  const code = getBrTeamCode(teamCode || '');
+  if (code) {
+    const exact = rankings.find(r => r?.team === code);
+    if (exact) return exact;
+  }
+  return null;
+}
+
 function renderSplitRankingsSection(name){
   const el = document.getElementById('sec-split-ranks');
   if(!el || selected !== name) return;
@@ -681,6 +697,62 @@ function renderSplitRankingsSection(name){
   `;
 }
 
+async function loadGlobalSplitRankings(force=false){
+  if (!force && globalSplitData.lhp.length && globalSplitData.rhp.length) return;
+  const [l, r] = await Promise.all([
+    fetchBrSplitRanks('', 'lhp'),
+    fetchBrSplitRanks('', 'rhp')
+  ]);
+  globalSplitData.lhp = Array.isArray(l?.rankings) ? l.rankings : [];
+  globalSplitData.rhp = Array.isArray(r?.rankings) ? r.rankings : [];
+}
+
+function renderGlobalSplitRankingsView(){
+  const detail = document.getElementById('detail');
+  if(!detail) return;
+  const useLhp = splitRankingsHand === 'lhp';
+  const active = useLhp ? globalSplitData.lhp : globalSplitData.rhp;
+  const ordered = sortSplitRankings(active, splitRankingsSort);
+  detail.innerHTML = `
+    <div class="sec">
+      <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
+      <div class="rankings-panel" style="margin-top:0">
+        <div class="rankings-top">
+          <div class="mini-btns">
+            <button class="mini-btn ${useLhp ? '' : 'active'}" onclick="setSplitRankingsView('rhp')">VS RHP</button>
+            <button class="mini-btn ${useLhp ? 'active' : ''}" onclick="setSplitRankingsView('lhp')">VS LHP</button>
+            <button class="mini-btn ${splitRankingsSort === 'worst' ? 'active' : ''}" onclick="setSplitRankingsOrder('worst')">WORST → BEST</button>
+            <button class="mini-btn ${splitRankingsSort === 'best' ? 'active' : ''}" onclick="setSplitRankingsOrder('best')">BEST → WORST</button>
+          </div>
+        </div>
+        <div class="rankings-table-wrap">
+          <table class="rankings-table">
+            <thead><tr><th>RANK</th><th>TEAM</th><th>K%</th><th>SO</th><th>HR</th><th>R</th><th>G</th></tr></thead>
+            <tbody>${buildSplitRankingsRows(ordered, null)}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function setMainTab(tab){
+  mainTab = tab === 'ranks' ? 'ranks' : 'props';
+  const layout = document.querySelector('.layout');
+  const ranksBtn = document.getElementById('tab-ranks');
+  if (ranksBtn) ranksBtn.classList.toggle('active', mainTab === 'ranks');
+  if (layout) layout.classList.toggle('ranks-mode', mainTab === 'ranks');
+  if (mainTab === 'ranks'){
+    const detail = document.getElementById('detail');
+    if (detail) detail.innerHTML = `<div class="sec"><div class="sec-hdr">K% SPLIT RANKINGS 1-30</div><div class="mini-load"><div class="mini-ring"></div>Loading split rankings...</div></div>`;
+    await loadGlobalSplitRankings();
+    if (mainTab === 'ranks') renderGlobalSplitRankingsView();
+    return;
+  }
+  renderList();
+  if(selected && pitchers[selected]) renderDetail(selected);
+}
+
 async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pitcherHand, teamAbbrev) {
   const el = document.getElementById('sec-matchup');
   if (!el || selected !== name) return;
@@ -702,16 +774,19 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
   const k9 = pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—';
   const kPct = pit?.strikeoutPercentage ? `${formatMatchupStat(pit.strikeoutPercentage)}%` : '—';
   const activeHand = pitcherHand === 'R' ? 'RHP' : pitcherHand === 'L' ? 'LHP' : null;
-  const activeRank = activeHand === 'LHP' ? splitL?.teamStats : activeHand === 'RHP' ? splitR?.teamStats : null;
+  const lookupCode = getBrTeamCode(teamAbbrev || teamName);
+  const splitLTeam = resolveSplitTeamStats(splitL, lookupCode);
+  const splitRTeam = resolveSplitTeamStats(splitR, lookupCode);
+  const activeRank = activeHand === 'LHP' ? splitLTeam : activeHand === 'RHP' ? splitRTeam : null;
   const matchup = matchupGrade(hit, pit, activeRank?.rank, activeHand);
-  const vsL = splitL?.teamStats?.rank ?? '—';
-  const vsR = splitR?.teamStats?.rank ?? '—';
-  const lOps = splitL?.teamStats?.ops || '—';
-  const rOps = splitR?.teamStats?.ops || '—';
+  const vsL = splitLTeam?.rank ?? '—';
+  const vsR = splitRTeam?.rank ?? '—';
+  const lOps = splitLTeam?.ops || '—';
+  const rOps = splitRTeam?.ops || '—';
   const lRankings = Array.isArray(splitL?.rankings) ? splitL.rankings : [];
   const rRankings = Array.isArray(splitR?.rankings) ? splitR.rankings : [];
   const reasonList = (matchup.reasons || []).map(txt => `<li>${txt}</li>`).join('');
-  const focusCode = getBrTeamCode(teamAbbrev || teamName);
+  const focusCode = lookupCode;
   splitRankingsContext[name] = { lRankings, rRankings, focusCode };
   renderSplitRankingsSection(name);
 
@@ -763,11 +838,19 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
 
 function setSplitRankingsView(hand){
   splitRankingsHand = hand === 'lhp' ? 'lhp' : 'rhp';
+  if(mainTab === 'ranks'){
+    renderGlobalSplitRankingsView();
+    return;
+  }
   if(selected && pitchers[selected]) renderSplitRankingsSection(selected);
 }
 
 function setSplitRankingsOrder(order){
   splitRankingsSort = order === 'best' ? 'best' : 'worst';
+  if(mainTab === 'ranks'){
+    renderGlobalSplitRankingsView();
+    return;
+  }
   if(selected && pitchers[selected]) renderSplitRankingsSection(selected);
 }
 
@@ -970,9 +1053,14 @@ function isSharp(d){
 
 // ── Render list ──────────────────────────────────────────────────────────────
 function setSort(s){
+  mainTab='props';
   sortMode=s;
   document.querySelectorAll('.sb').forEach(b=>b.classList.remove('active'));
   document.getElementById(`sort-${s}`).classList.add('active');
+  const ranksBtn = document.getElementById('tab-ranks');
+  if (ranksBtn) ranksBtn.classList.remove('active');
+  const layout = document.querySelector('.layout');
+  if (layout) layout.classList.remove('ranks-mode');
   renderList();
 }
 
@@ -1168,7 +1256,8 @@ async function loadMLBData(name){
 
   // Find today's game for this pitcher
   const todayGame = findTodayGame(schedule, d.awayTeam, d.homeTeam);
-  const pitcherHand = player.throws ? String(player.throws).toUpperCase() : null;
+  const rawHand = player.pitchHand?.code || player.throws?.code || player.throws || null;
+  const pitcherHand = rawHand ? String(rawHand).trim().toUpperCase().charAt(0) : null;
 
   if(todayGame){
     const opponent = await renderBvP(name, mlbId, todayGame);
