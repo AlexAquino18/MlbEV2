@@ -34,31 +34,71 @@ function loadBundledBrHtml(hand) {
   return '';
 }
 
-function buildSyntheticRankings(hand = 'lhp') {
-  const teams = [
-    'ARI','ATL','BAL','BOS','CHC','CHW','CIN','CLE','COL','DET',
-    'HOU','KCR','LAA','LAD','MIA','MIL','MIN','NYM','NYY','OAK',
-    'PHI','PIT','SDP','SEA','SFG','STL','TBR','TEX','TOR','WSN'
-  ];
-  const ordered = String(hand).toLowerCase().startsWith('r') ? [...teams].reverse() : teams;
-  return ordered.map((team, idx) => {
-    const rank = idx + 1;
-    const kPctNum = Math.max(15, 25 - (idx * 0.3));
-    return {
-      rank,
-      team,
-      games: 162,
-      pa: 6200,
-      ab: 5500,
-      r: Math.max(500, 780 - idx * 8),
-      h: Math.max(1200, 1520 - idx * 9),
-      hr: Math.max(110, 240 - idx * 4),
-      so: Math.round((kPctNum / 100) * 6200),
-      kPct: kPctNum.toFixed(1),
-      ops: (0.640 + ((30 - rank) * 0.007)).toFixed(3),
-      synthetic: true
-    };
-  });
+async function fetchMlbJson(pathname, params = {}) {
+  const qs = new URLSearchParams(params);
+  const url = `https://statsapi.mlb.com${pathname}${qs.toString() ? `?${qs.toString()}` : ''}`;
+  const resp = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+  if (!resp.ok) return null;
+  return resp.json();
+}
+
+function toNum(value) {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function buildDerivedRhpRankingsFromMlb(season, lhpRankings) {
+  try {
+    const teamsData = await fetchMlbJson('/api/v1/teams', { sportId: 1, season });
+    const teams = Array.isArray(teamsData?.teams) ? teamsData.teams : [];
+    if (!teams.length || !Array.isArray(lhpRankings) || !lhpRankings.length) return [];
+
+    const lhpMap = new Map(lhpRankings.map(r => [String(r.team || '').toUpperCase(), r]));
+    const rows = [];
+
+    for (const team of teams) {
+      const teamCode = String(team.abbreviation || '').toUpperCase();
+      if (!teamCode) continue;
+      const seasonStats = await fetchMlbJson(`/api/v1/teams/${team.id}/stats`, {
+        stats: 'season',
+        group: 'hitting',
+        season,
+        sportId: 1
+      });
+      const total = seasonStats?.stats?.[0]?.splits?.[0]?.stat;
+      if (!total) continue;
+
+      const lhp = lhpMap.get(teamCode) || {};
+      const pa = Math.max(0, toNum(total.plateAppearances) - toNum(lhp.pa));
+      const ab = Math.max(0, toNum(total.atBats) - toNum(lhp.ab));
+      const r = Math.max(0, toNum(total.runs) - toNum(lhp.r));
+      const h = Math.max(0, toNum(total.hits) - toNum(lhp.h));
+      const hr = Math.max(0, toNum(total.homeRuns) - toNum(lhp.hr));
+      const so = Math.max(0, toNum(total.strikeOuts) - toNum(lhp.so));
+      const games = toNum(total.gamesPlayed) || 0;
+      const kPctNum = pa > 0 ? (so / pa) * 100 : 0;
+      rows.push({
+        rank: null,
+        team: teamCode,
+        games,
+        pa,
+        ab,
+        r,
+        h,
+        hr,
+        so,
+        kPct: kPctNum > 0 ? kPctNum.toFixed(1) : null,
+        ops: null,
+        derived: true
+      });
+    }
+
+    rows.sort((a, b) => toNum(b.kPct) - toNum(a.kPct));
+    rows.forEach((row, idx) => { row.rank = idx + 1; });
+    return rows;
+  } catch {
+    return [];
+  }
 }
 
 function parseBrSplitRanks(html) {
@@ -162,14 +202,22 @@ export default async function handler(req, res) {
       }
 
       let bundledUsed = false;
+      let derivedUsed = false;
       if (!rankings.length) {
-        const bundled = loadBundledBrHtml(rest.hand || 'lhp');
+        const preferredBundledHand = String(rest.hand || 'lhp').toLowerCase().startsWith('r') ? 'lhp' : (rest.hand || 'lhp');
+        const bundled = loadBundledBrHtml(preferredBundledHand);
         if (bundled) {
-          rankings = parseBrSplitRanks(bundled);
+          const bundledParsed = parseBrSplitRanks(bundled);
+          if (String(rest.hand || 'lhp').toLowerCase().startsWith('r')) {
+            const derived = await buildDerivedRhpRankingsFromMlb(chosenSeason, bundledParsed);
+            rankings = derived.length ? derived : bundledParsed;
+            derivedUsed = derived.length > 0;
+          } else {
+            rankings = bundledParsed;
+          }
           bundledUsed = rankings.length > 0;
         }
       }
-      if (!rankings.length) rankings = buildSyntheticRankings(rest.hand || 'lhp');
 
       const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
       const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
@@ -188,7 +236,8 @@ export default async function handler(req, res) {
            rank: teamData?.rank ?? null,
            teamStats: teamData,
            rankings,
-           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason) || bundledUsed || rankings.some(r => r.synthetic),
+           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason) || bundledUsed || derivedUsed,
+           derivedFromMlbTotals: derivedUsed,
            upstreamStatus: chosenStatus
          });
       return;
