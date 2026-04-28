@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 const ODDS_KEY = process.env.ODDS_API_KEY || 'acb869ede8a223bb73fec28b9290f78dd9fc26e75d58e8427e4c63b3060b5106';
 const cache = new Map();
 
@@ -14,6 +17,21 @@ function buildBrUrl(hand, season) {
   const handKey = String(hand).toLowerCase().startsWith('r') ? 'RHP' : 'LHP';
   const params = new URLSearchParams({ full: '1', params: `plato|vs ${handKey}|ML|${season}|bat|AB|` });
   return `https://www.baseball-reference.com/split_stats_lg.cgi?${params}`;
+}
+
+function loadBundledBrHtml(hand) {
+  const preferred = String(hand || 'lhp').toLowerCase().startsWith('r') ? 'br_rhp.html' : 'br_lhp.html';
+  const fallbacks = [preferred, 'br_lhp.html', 'br_lhp_test.html'];
+  for (const file of fallbacks) {
+    try {
+      const full = path.join(process.cwd(), file);
+      if (fs.existsSync(full)) {
+        const html = fs.readFileSync(full, 'utf8');
+        if (html && html.length > 1000) return html;
+      }
+    } catch {}
+  }
+  return '';
 }
 
 function parseBrSplitRanks(html) {
@@ -116,10 +134,20 @@ export default async function handler(req, res) {
         if (upstream.ok && parsed.length) break;
       }
 
+      let bundledUsed = false;
+      if (!rankings.length) {
+        const bundled = loadBundledBrHtml(rest.hand || 'lhp');
+        if (bundled) {
+          rankings = parseBrSplitRanks(bundled);
+          bundledUsed = rankings.length > 0;
+        }
+      }
+
       const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
       const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
-      const okWithData = rankings.length > 0;
-      res.status(okWithData ? 200 : chosenStatus)
+
+      // Always return 200 JSON for source=br so frontend can render fallback rows.
+      res.status(200)
          .setHeader('Content-Type', 'application/json')
          .setHeader('Cache-Control', ttlMs > 0 ? 'public, s-maxage=900, stale-while-revalidate=3600' : 'public, s-maxage=300')
          .setHeader('X-Proxy-Cache', 'MISS')
@@ -132,7 +160,8 @@ export default async function handler(req, res) {
            rank: teamData?.rank ?? null,
            teamStats: teamData,
            rankings,
-           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason)
+           fallbackUsed: chosenSeason !== String(rest.season || requestedSeason) || bundledUsed,
+           upstreamStatus: chosenStatus
          });
       return;
     }
