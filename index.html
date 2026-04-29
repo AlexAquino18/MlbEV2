@@ -955,6 +955,51 @@ async function fetchTeamRoster(teamId) {
   } catch { return []; }
 }
 
+function isLikelyPitcherRosterEntry(entry) {
+  const pos = String(entry?.position?.abbreviation || '').toUpperCase();
+  return pos === 'P' || pos === 'TWP';
+}
+
+async function fetchRecentTeamBattingOrder(teamId, beforeDate) {
+  const keyDate = String(beforeDate || new Date().toISOString().slice(0,10));
+  const cacheKey = `recent_batting_${teamId}_${keyDate}`;
+  if (mlbCache[cacheKey]) return mlbCache[cacheKey];
+  try {
+    const end = new Date(beforeDate || new Date());
+    const start = new Date(end);
+    start.setDate(end.getDate() - 14);
+    const sched = await mlbFetch('/api/v1/schedule', {
+      sportId: 1,
+      teamId,
+      startDate: start.toISOString().slice(0,10),
+      endDate: end.toISOString().slice(0,10)
+    });
+    const finals = [];
+    for (const d of sched?.dates || []) {
+      for (const g of d.games || []) {
+        if (g.status?.codedGameState === 'F' || g.status?.abstractGameState === 'Final') finals.push(g);
+      }
+    }
+    finals.sort((a,b)=>new Date(b.gameDate)-new Date(a.gameDate));
+    for (const g of finals.slice(0,6)) {
+      const box = await mlbFetch(`/api/v1/game/${g.gamePk}/boxscore`);
+      const isAway = box?.teams?.away?.team?.id === teamId;
+      const side = isAway ? box?.teams?.away : box?.teams?.home;
+      const players = Object.values(side?.players || {});
+      const hitters = players
+        .filter(p => p?.person?.id && p?.person?.fullName && p?.battingOrder && !/^(P|TWP)$/i.test(String(p?.position?.abbreviation || '')))
+        .sort((a,b)=>String(a.battingOrder).localeCompare(String(b.battingOrder)))
+        .map(p => ({ id: p.person.id, name: p.person.fullName }));
+      if (hitters.length >= 7) {
+        mlbCache[cacheKey] = hitters.slice(0,9);
+        return mlbCache[cacheKey];
+      }
+    }
+  } catch {}
+  mlbCache[cacheKey] = [];
+  return [];
+}
+
 function getBrTeamCode(abbr) {
   if (!abbr) return abbr;
   const key = String(abbr).trim().toUpperCase();
@@ -1520,6 +1565,7 @@ async function renderBvP(name, pitcherId, game){
   // Get lineup from game
   const lineup = game.lineups;
   let batters=[];
+  let lineupSource='today';
 
   if(lineup){
     const side=oppTeamId===awayId?'away':'home';
@@ -1527,9 +1573,19 @@ async function renderBvP(name, pitcherId, game){
   }
 
   if(!batters.length){
-    // Try roster fallback
+    // Try recent actual batting order first (previous games)
+    batters = await fetchRecentTeamBattingOrder(oppTeamId, game?.gameDate);
+    if (batters.length) lineupSource = 'recent';
+  }
+
+  if(!batters.length){
+    // Last fallback: roster hitters only (exclude pitchers)
     const roster=await fetchTeamRoster(oppTeamId);
-    batters=roster.slice(0,9).map(r=>({id:r.person.id,name:r.person.fullName}));
+    batters=roster
+      .filter(r => !isLikelyPitcherRosterEntry(r) && r?.person?.id && r?.person?.fullName)
+      .slice(0,9)
+      .map(r=>({id:r.person.id,name:r.person.fullName}));
+    if (batters.length) lineupSource = 'roster';
   }
 
   if(!batters.length){
@@ -1566,7 +1622,8 @@ async function renderBvP(name, pitcherId, game){
     </tr>`;
   }).join('');
 
-  el.innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER <span style="color:var(--dim);font-size:9px">${oppTeamName.split(' ').pop()}</span></div>
+  const sourceTag = lineupSource === 'today' ? 'TODAY' : lineupSource === 'recent' ? 'RECENT GAME' : 'ROSTER';
+  el.innerHTML=`<div class="sec-hdr">TODAY'S LINEUP VS PITCHER <span style="color:var(--dim);font-size:9px">${oppTeamName.split(' ').pop()} · ${sourceTag}</span></div>
   <table class="bvp-table">
     <thead><tr><th>BATTER</th><th>AB</th><th>AVG</th><th>HR</th><th>RBI</th><th>K%</th><th>OPS</th></tr></thead>
     <tbody>${rows}</tbody>
