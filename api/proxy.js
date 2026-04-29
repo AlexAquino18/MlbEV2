@@ -47,6 +47,33 @@ function toNum(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normalizeRankings(rankings = []) {
+  const cleaned = (Array.isArray(rankings) ? rankings : [])
+    .filter(r => r && r.team)
+    .map(r => ({
+      rank: toNum(r.rank) || null,
+      team: String(r.team || '').trim().toUpperCase(),
+      games: toNum(r.games),
+      pa: toNum(r.pa),
+      ab: toNum(r.ab),
+      r: toNum(r.r),
+      h: toNum(r.h),
+      hr: toNum(r.hr),
+      so: toNum(r.so),
+      kPct: r.kPct != null && r.kPct !== '' ? String(r.kPct) : null,
+      ops: r.ops != null && r.ops !== '' ? String(r.ops) : null,
+      derived: !!r.derived
+    }))
+    .filter(r => r.team.length === 3);
+
+  cleaned.sort((a, b) => {
+    const ar = a.rank == null ? 999 : a.rank;
+    const br = b.rank == null ? 999 : b.rank;
+    return ar - br;
+  });
+  return cleaned;
+}
+
 async function buildDerivedRhpRankingsFromMlb(season, lhpRankings) {
   try {
     const teamsData = await fetchMlbJson('/api/v1/teams', { sportId: 1, season });
@@ -179,26 +206,27 @@ export default async function handler(req, res) {
       const requestedSeason = Number(rest.season || new Date().getFullYear());
       const seasonCandidates = [requestedSeason, requestedSeason - 1, requestedSeason - 2]
         .filter((v, i, arr) => Number.isFinite(v) && v > 2000 && arr.indexOf(v) === i);
-      let chosenBody = '';
       let chosenStatus = 404;
-      let chosenContentType = 'text/html';
       let chosenSeason = String(requestedSeason);
       let rankings = [];
+      let sourceUsed = 'unavailable';
+      let quality = 'unavailable';
 
       for (const s of seasonCandidates) {
         const tryUrl = buildBrUrl(rest.hand || 'lhp', s);
         const upstream = await fetch(tryUrl, { headers });
         const body = await upstream.text();
-        const contentType = upstream.headers.get('content-type') || 'text/html';
         const parsed = upstream.ok ? parseBrSplitRanks(body) : [];
 
-        chosenBody = body;
         chosenStatus = upstream.status;
-        chosenContentType = contentType;
         chosenSeason = String(s);
         rankings = parsed;
 
-        if (upstream.ok && parsed.length) break;
+        if (upstream.ok && parsed.length) {
+          sourceUsed = s === requestedSeason ? 'live_br' : 'season_fallback_br';
+          quality = s === requestedSeason ? 'high' : 'medium';
+          break;
+        }
       }
 
       let bundledUsed = false;
@@ -212,12 +240,18 @@ export default async function handler(req, res) {
             const derived = await buildDerivedRhpRankingsFromMlb(chosenSeason, bundledParsed);
             rankings = derived.length ? derived : bundledParsed;
             derivedUsed = derived.length > 0;
+            sourceUsed = derivedUsed ? 'derived_mlb_totals' : 'bundled_br';
+            quality = derivedUsed ? 'medium' : 'low';
           } else {
             rankings = bundledParsed;
+            sourceUsed = 'bundled_br';
+            quality = 'low';
           }
           bundledUsed = rankings.length > 0;
         }
       }
+
+      rankings = normalizeRankings(rankings);
 
       const teamCode = rest.team ? String(rest.team).toUpperCase() : null;
       const teamData = teamCode ? rankings.find(r => r.team === teamCode) || null : null;
@@ -238,7 +272,10 @@ export default async function handler(req, res) {
            rankings,
            fallbackUsed: chosenSeason !== String(rest.season || requestedSeason) || bundledUsed || derivedUsed,
            derivedFromMlbTotals: derivedUsed,
-           upstreamStatus: chosenStatus
+           upstreamStatus: chosenStatus,
+           sourceUsed,
+           dataQuality: rankings.length ? quality : 'unavailable',
+           asOf: new Date().toISOString()
          });
       return;
     }

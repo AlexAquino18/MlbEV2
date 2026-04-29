@@ -248,7 +248,9 @@ canvas.chart{width:100%;height:100%;display:block;cursor:crosshair}
 <div class="controls">
   <span class="cl">SORT</span>
   <button class="sb active" id="sort-move" onclick="setSort('move')">ODDS MOVE</button>
-  <button class="sb" id="tab-ranks" onclick="setMainTab('ranks')">K% SPLIT RANKS</button>
+  <button class="sb" id="tab-ranks" onclick="setMainTab('ranks')">SPLIT RANKS</button>
+  <button class="sb" id="tab-movers" onclick="setMainTab('movers')">MARKET MOVERS</button>
+  <button class="sb" id="tab-lab" onclick="setMainTab('lab')">MATCHUP LAB</button>
   <button class="sb" id="sort-sharp" onclick="setSort('sharp')">SHARP</button>
   <button class="sb" id="sort-line" onclick="setSort('line')">K LINE</button>
   <button class="sb" id="sort-name" onclick="setSort('name')">NAME</button>
@@ -310,8 +312,8 @@ let lineupTab={}; // per pitcher: 'away'|'home'
 let splitRankingsSort='worst';
 let splitRankingsHand='rhp';
 let splitRankingsContext={}; // per pitcher cached split rankings payload
-let mainTab='props'; // 'props' | 'ranks'
-let globalSplitData={ lhp:[], rhp:[] };
+let mainTab='props'; // 'props' | 'ranks' | 'movers' | 'lab'
+let globalSplitData={ lhp:[], rhp:[], meta:{ lhp:null, rhp:null } };
 
 // ── MLB Stats API helpers ────────────────────────────────────────────────────
 async function mlbFetch(path, params={}) {
@@ -388,6 +390,18 @@ function saveHistoryStore(store) {
 
 function sameBooks(a, b) {
   return JSON.stringify(a || {}) === JSON.stringify(b || {});
+}
+
+function computeTrackingQuality(d){
+  const snapshots = Array.isArray(d?.history) ? d.history : [];
+  const depth = snapshots.length;
+  const move = Math.abs(netLineMove(d));
+  const booksNow = Object.keys(d?.currentBooks || {}).length;
+  const hasPrice = snapshots.some(s => Object.values(s.books || {}).some(b => b?.over != null || b?.under != null));
+  const score = (depth >= 8 ? 2 : depth >= 4 ? 1 : 0) + (booksNow >= 2 ? 1 : 0) + (hasPrice ? 1 : 0) + (move >= 0.5 ? 1 : 0);
+  if(score >= 4) return {label:'HIGH', cls:'up'};
+  if(score >= 2) return {label:'MED', cls:'neu'};
+  return {label:'LOW', cls:'dn'};
 }
 
 function parseOddsNumber(value){
@@ -597,9 +611,9 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
   const rankBad = splitRank != null && splitRank >= 21;
 
   const reasons = [];
-  reasons.push(`Opponent offense: AVG ${hit?.avg || '—'}, OBP ${hit?.obp || '—'}, OPS ${hit?.ops || '—'}.`);
-  reasons.push(`Pitcher baseline: ERA ${pit?.era || '—'}, WHIP ${pit?.whip || '—'}, K/9 ${pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—'}.`);
-  if (splitRank != null) reasons.push(`Split rank vs ${splitHand || 'handedness'} is ${splitRank}/30 (1 = most strikeout-prone, 30 = toughest to K).`);
+  reasons.push({ weight: 0.35, text: `Opponent offense: AVG ${hit?.avg || '—'}, OBP ${hit?.obp || '—'}, OPS ${hit?.ops || '—'}.` });
+  reasons.push({ weight: 0.40, text: `Pitcher baseline: ERA ${pit?.era || '—'}, WHIP ${pit?.whip || '—'}, K/9 ${pit?.strikeoutsPer9Inn || pit?.strikeOutsPer9 || '—'}.` });
+  if (splitRank != null) reasons.push({ weight: 0.25, text: `Split rank vs ${splitHand || 'handedness'} is ${splitRank}/30 (1 = most strikeout-prone, 30 = toughest to K).` });
 
   if (rankGood || rankBad) {
     const label = rankGood ? 'GOOD MATCHUP' : 'BAD MATCHUP';
@@ -607,7 +621,7 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
     const desc = rankGood
       ? `Baseball-Reference rank ${splitRank}/30 ${rankHandLabel} shows the opposing lineup is weak against this handedness.`
       : `Baseball-Reference rank ${splitRank}/30 ${rankHandLabel} shows the opposing lineup is strong against this handedness.`;
-    return { label, tone, desc, reasons };
+    return { label, tone, desc, reasons, confidence: 82 };
   }
 
   // Adjust delta with split rank if available (lower rank = better matchup for pitcher)
@@ -623,7 +637,8 @@ function matchupGrade(hit, pit, splitRank, splitHand) {
       ? `Matchup is tougher. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} adds concern.` : 'Opponent offense and starter profile are a challenge.'}`
       : `This matchup is balanced. ${rankLabel ? `Split rank ${splitRank}/30 ${rankHandLabel} is middling.` : 'Watch the line and recent trends.'}`;
 
-  return { label, tone, desc, reasons };
+  const confidence = splitRank != null ? 74 : 64;
+  return { label, tone, desc, reasons, confidence };
 }
 
 function sortSplitRankings(rankings, order='worst'){
@@ -676,10 +691,10 @@ function renderSplitRankingsSection(name){
   const useLhp = splitRankingsHand === 'lhp';
   const activeRankings = useLhp ? ctx.lRankings : ctx.rRankings;
   const ordered = sortSplitRankings(activeRankings, splitRankingsSort);
-  const usingSynthetic = ordered.some(r => r?.synthetic);
+  const meta = useLhp ? ctx.lMeta : ctx.rMeta;
   el.innerHTML = `
     <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
-    ${usingSynthetic ? '<div class="ndm" style="padding:0 0 10px 0;font-size:10px;text-align:left">Using fallback ranking set while live split feed is unavailable.</div>' : ''}
+    ${meta ? `<div class="ndm" style="padding:0 0 10px 0;font-size:10px;text-align:left">Source: ${meta.sourceUsed || 'unknown'} · Quality: ${meta.dataQuality || 'unknown'} · As of ${fmtTime(meta.asOf || new Date().toISOString())}</div>` : ''}
     <div class="rankings-panel" style="margin-top:0">
       <div class="rankings-top">
         <div class="mini-btns">
@@ -707,6 +722,18 @@ async function loadGlobalSplitRankings(force=false){
   ]);
   globalSplitData.lhp = Array.isArray(l?.rankings) ? l.rankings : [];
   globalSplitData.rhp = Array.isArray(r?.rankings) ? r.rankings : [];
+  globalSplitData.meta.lhp = l ? { sourceUsed: l.sourceUsed, dataQuality: l.dataQuality, asOf: l.asOf } : null;
+  globalSplitData.meta.rhp = r ? { sourceUsed: r.sourceUsed, dataQuality: r.dataQuality, asOf: r.asOf } : null;
+  if(!globalSplitData.lhp.length){
+    const fallbackL = await buildClientFallbackSplitRankings('lhp');
+    globalSplitData.lhp = fallbackL;
+    globalSplitData.meta.lhp = { sourceUsed:'client_mlb_totals', dataQuality:'low', asOf:new Date().toISOString() };
+  }
+  if(!globalSplitData.rhp.length){
+    const fallbackR = await buildClientFallbackSplitRankings('rhp');
+    globalSplitData.rhp = fallbackR;
+    globalSplitData.meta.rhp = { sourceUsed:'client_mlb_totals', dataQuality:'low', asOf:new Date().toISOString() };
+  }
 }
 
 function renderGlobalSplitRankingsView(){
@@ -715,11 +742,11 @@ function renderGlobalSplitRankingsView(){
   const useLhp = splitRankingsHand === 'lhp';
   const active = useLhp ? globalSplitData.lhp : globalSplitData.rhp;
   const ordered = sortSplitRankings(active, splitRankingsSort);
-  const usingSynthetic = ordered.some(r => r?.synthetic);
+  const meta = useLhp ? globalSplitData.meta.lhp : globalSplitData.meta.rhp;
   detail.innerHTML = `
     <div class="sec">
       <div class="sec-hdr">K% SPLIT RANKINGS 1-30</div>
-      ${usingSynthetic ? '<div class="ndm" style="padding:0 0 10px 0;font-size:10px;text-align:left">Using fallback ranking set while live split feed is unavailable.</div>' : ''}
+      ${meta ? `<div class="ndm" style="padding:0 0 10px 0;font-size:10px;text-align:left">Source: ${meta.sourceUsed || 'unknown'} · Quality: ${meta.dataQuality || 'unknown'} · As of ${fmtTime(meta.asOf || new Date().toISOString())}</div>` : ''}
       <div class="rankings-panel" style="margin-top:0">
         <div class="rankings-top">
           <div class="mini-btns">
@@ -741,10 +768,14 @@ function renderGlobalSplitRankingsView(){
 }
 
 async function setMainTab(tab){
-  mainTab = tab === 'ranks' ? 'ranks' : 'props';
+  mainTab = ['ranks','movers','lab'].includes(tab) ? tab : 'props';
   const layout = document.querySelector('.layout');
   const ranksBtn = document.getElementById('tab-ranks');
+  const moversBtn = document.getElementById('tab-movers');
+  const labBtn = document.getElementById('tab-lab');
   if (ranksBtn) ranksBtn.classList.toggle('active', mainTab === 'ranks');
+  if (moversBtn) moversBtn.classList.toggle('active', mainTab === 'movers');
+  if (labBtn) labBtn.classList.toggle('active', mainTab === 'lab');
   if (layout) layout.classList.toggle('ranks-mode', mainTab === 'ranks');
   if (mainTab === 'ranks'){
     const detail = document.getElementById('detail');
@@ -753,8 +784,40 @@ async function setMainTab(tab){
     if (mainTab === 'ranks') renderGlobalSplitRankingsView();
     return;
   }
+  if (mainTab === 'movers'){
+    renderMarketMoversView();
+    return;
+  }
+  if (mainTab === 'lab'){
+    await loadGlobalSplitRankings();
+    renderMatchupLabView();
+    return;
+  }
   renderList();
   if(selected && pitchers[selected]) renderDetail(selected);
+}
+
+function renderMarketMoversView(){
+  const detail = document.getElementById('detail');
+  if(!detail) return;
+  const rows = Object.entries(pitchers)
+    .map(([name,d])=>({name,d, lineMove: netLineMove(d), oddsMove: netOddsMove(d), tq: computeTrackingQuality(d)}))
+    .sort((a,b)=>Math.abs(b.lineMove) - Math.abs(a.lineMove))
+    .slice(0,30)
+    .map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td>${r.lineMove>0?'+':''}${r.lineMove.toFixed(1)}</td><td>${r.oddsMove>0?'+':''}${r.oddsMove.toFixed(1)}</td><td>${r.tq.label}</td></tr>`)
+    .join('');
+  detail.innerHTML = `<div class="sec"><div class="sec-hdr">MARKET MOVERS</div><div class="rankings-table-wrap"><table class="rankings-table"><thead><tr><th>#</th><th>PITCHER</th><th>LINE Δ</th><th>ODDS Δ</th><th>QUALITY</th></tr></thead><tbody>${rows || '<tr><td colspan=\"5\">No props available.</td></tr>'}</tbody></table></div></div>`;
+}
+
+function renderMatchupLabView(){
+  const detail = document.getElementById('detail');
+  if(!detail) return;
+  const useLhp = splitRankingsHand === 'lhp';
+  const active = useLhp ? globalSplitData.lhp : globalSplitData.rhp;
+  const topK = sortSplitRankings(active,'best').slice(0,10);
+  const tough = sortSplitRankings(active,'worst').slice(0,10);
+  const mk = arr => arr.map(r=>`<tr><td>${r.rank}</td><td>${r.team}</td><td>${r.kPct != null ? `${r.kPct}%` : '—'}</td><td>${r.so ?? '—'}</td></tr>`).join('');
+  detail.innerHTML = `<div class="sec"><div class="sec-hdr">MATCHUP LAB · VS ${useLhp?'LHP':'RHP'}</div><div class="mini-btns" style="margin-bottom:12px"><button class="mini-btn ${useLhp?'':'active'}" onclick="setSplitRankingsView('rhp');setMainTab('lab')">VS RHP</button><button class="mini-btn ${useLhp?'active':''}" onclick="setSplitRankingsView('lhp');setMainTab('lab')">VS LHP</button></div><div class="matchup-stats"><div class="matchup-card"><h4>Most K-Friendly (Top 10)</h4><table class="rankings-table"><tbody>${mk(topK)}</tbody></table></div><div class="matchup-card"><h4>Toughest to K (Bottom 10)</h4><table class="rankings-table"><tbody>${mk(tough)}</tbody></table></div></div></div>`;
 }
 
 async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pitcherHand, teamAbbrev) {
@@ -795,9 +858,11 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
   const rOps = splitRTeam?.ops || '—';
   const lRankings = Array.isArray(splitL?.rankings) ? splitL.rankings : [];
   const rRankings = Array.isArray(splitR?.rankings) ? splitR.rankings : [];
-  const reasonList = (matchup.reasons || []).map(txt => `<li>${txt}</li>`).join('');
+  const lMeta = splitL ? { sourceUsed: splitL.sourceUsed, dataQuality: splitL.dataQuality, asOf: splitL.asOf } : null;
+  const rMeta = splitR ? { sourceUsed: splitR.sourceUsed, dataQuality: splitR.dataQuality, asOf: splitR.asOf } : null;
+  const reasonList = (matchup.reasons || []).map(item => `<li><span style="color:var(--accent2);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:6px">${Math.round((item.weight || 0) * 100)}%</span>${item.text}</li>`).join('');
   const focusCode = lookupCode;
-  splitRankingsContext[name] = { lRankings, rRankings, focusCode };
+  splitRankingsContext[name] = { lRankings, rRankings, lMeta, rMeta, focusCode };
   renderSplitRankingsSection(name);
 
   el.innerHTML = `
@@ -831,6 +896,7 @@ async function renderMatchupContext(name, todayGame, teamId, teamName, venue, pi
     <div class="szn-card"><div class="szn-v">${activeHand || '—'}</div><div class="szn-l">Active pitcher hand</div></div>
     <div class="szn-card"><div class="szn-v">${activeRank?.rank ?? '—'}</div><div class="szn-l">Active split rank</div></div>
     <div class="szn-card"><div class="szn-v">${activeHand === 'LHP' ? lOps : activeHand === 'RHP' ? rOps : '—'}</div><div class="szn-l">Active split OPS</div></div>
+    <div class="szn-card"><div class="szn-v">${matchup.confidence ?? '—'}%</div><div class="szn-l">Model confidence</div></div>
   </div>
   <div class="szn-grid">
     <div class="szn-card"><div class="szn-v">${teamName}</div><div class="szn-l">Opponent</div></div>
@@ -934,10 +1000,51 @@ async function fetchBrSplitRanks(teamCode, hand = 'lhp', season = CURRENT_SEASON
     const resp = await fetch(`/api/proxy?source=br&hand=${encodeURIComponent(hand)}&season=${encodeURIComponent(season)}&team=${encodeURIComponent(teamCode)}`);
     if (!resp.ok) return null;
     const data = await resp.json();
+    if (Array.isArray(data?.rankings) && data.rankings.length) {
+      data.rankings = data.rankings.map(r => ({ ...r, sourceUsed: data.sourceUsed, dataQuality: data.dataQuality }));
+    }
     mlbCache[cacheKey] = data;
     return data;
   } catch {
     return null;
+  }
+}
+
+async function buildClientFallbackSplitRankings(hand='lhp'){
+  const cacheKey = `client_split_fallback_${hand}_${CURRENT_SEASON}`;
+  if (mlbCache[cacheKey]) return mlbCache[cacheKey];
+  try {
+    const teamList = await mlbFetch('/api/v1/teams', { sportId:1, season: CURRENT_SEASON });
+    const teams = Array.isArray(teamList?.teams) ? teamList.teams : [];
+    const rows = [];
+    for (const t of teams) {
+      const stat = await fetchTeamSeasonStats(t.id, CURRENT_SEASON, 'hitting');
+      if (!stat) continue;
+      const pa = Number(stat.plateAppearances || 0);
+      const so = Number(stat.strikeOuts || 0);
+      const kPct = pa > 0 ? ((so/pa) * 100) : 0;
+      rows.push({
+        rank: null,
+        team: getBrTeamCode(t.abbreviation || t.teamName || t.name),
+        games: Number(stat.gamesPlayed || 0),
+        pa,
+        ab: Number(stat.atBats || 0),
+        r: Number(stat.runs || 0),
+        h: Number(stat.hits || 0),
+        hr: Number(stat.homeRuns || 0),
+        so,
+        kPct: kPct.toFixed(1),
+        ops: stat.ops || null,
+        sourceUsed: 'client_mlb_totals',
+        dataQuality: 'low'
+      });
+    }
+    rows.sort((a,b)=>Number(b.kPct)-Number(a.kPct));
+    rows.forEach((r, i)=>{ r.rank = i + 1; });
+    mlbCache[cacheKey] = rows;
+    return rows;
+  } catch {
+    return [];
   }
 }
 
@@ -1009,11 +1116,15 @@ function processEvent(ev) {
 }
 
 function snapshot() {
-  const now=new Date().toISOString();
+  const now = new Date().toISOString();
   for (const [,d] of Object.entries(pitchers)) {
     if (!Object.keys(d.currentBooks).length) continue;
-    const nextBooks = JSON.parse(JSON.stringify(d.currentBooks));
+    const nextBooks = Object.fromEntries(
+      Object.entries(d.currentBooks || {}).filter(([,book]) => book && book.line != null)
+    );
+    if (!Object.keys(nextBooks).length) continue;
     const last = d.history.at(-1);
+    if (last?.time && new Date(now) <= new Date(last.time)) continue;
     if (last && sameBooks(last.books, nextBooks)) continue;
     d.history.push({time:now,books:nextBooks});
     if (d.history.length>HISTORY_LIMIT) d.history=d.history.slice(-HISTORY_LIMIT);
@@ -1068,7 +1179,11 @@ function setSort(s){
   document.querySelectorAll('.sb').forEach(b=>b.classList.remove('active'));
   document.getElementById(`sort-${s}`).classList.add('active');
   const ranksBtn = document.getElementById('tab-ranks');
+  const moversBtn = document.getElementById('tab-movers');
+  const labBtn = document.getElementById('tab-lab');
   if (ranksBtn) ranksBtn.classList.remove('active');
+  if (moversBtn) moversBtn.classList.remove('active');
+  if (labBtn) labBtn.classList.remove('active');
   const layout = document.querySelector('.layout');
   if (layout) layout.classList.remove('ranks-mode');
   renderList();
@@ -1087,6 +1202,7 @@ function renderList(){
   if(!entries.length){list.innerHTML=`<div class="ndm">NO PROPS FOUND</div>`;return;}
   list.innerHTML=entries.map(([name,d],i)=>{
     const mv=netOddsMove(d),cl=consensusLine(d),sh=isSharp(d);
+    const tq = computeTrackingQuality(d);
     const mc=mv>0?'up':mv<0?'dn':'flat';
     const ms=mv===0?'FLAT':fmtOdds(Math.round(mv));
     const displayName=d.playerName||name;
@@ -1099,6 +1215,7 @@ function renderList(){
       <div class="pr">
         <div class="pline">${cl??'—'}</div>
         <div class="pmove ${mc}">${ms}</div>
+        <div class="pmove ${tq.cls==='up'?'up':tq.cls==='dn'?'dn':'flat'}">Q:${tq.label}</div>
         ${sh?`<div class="spip">⚡ SHARP</div>`:''}
       </div>
     </div>`;
@@ -1125,6 +1242,7 @@ function selectPitcher(name){
 function renderDetail(name){
   const d=pitchers[name]; if(!d) return;
   const mv=netOddsMove(d), cl=consensusLine(d), sh=isSharp(d);
+  const tq = computeTrackingQuality(d);
   const mCls=mv>0?'up':mv<0?'dn':'neu';
   const mStr=mv===0?'0':fmtOdds(Math.round(mv));
   const init=name.split(' ').map(p=>p[0]).join('').slice(0,2).toUpperCase();
@@ -1162,6 +1280,7 @@ function renderDetail(name){
       <div class="dst"><div class="dstv ${mCls}">${mStr}</div><div class="dstl">ODDS MOVE</div></div>
       <div class="dst"><div class="dstv neu">${allBooks.length}</div><div class="dstl">BOOKS</div></div>
       <div class="dst"><div class="dstv neu">${d.history.length}</div><div class="dstl">SNAPSHOTS</div></div>
+      <div class="dst"><div class="dstv ${tq.cls}">${tq.label}</div><div class="dstl">TRACK QUALITY</div></div>
       <div class="dst" id="dst-kpct"><div class="dstv acc">—</div><div class="dstl">K% (SZN)</div></div>
       <div class="dst" id="dst-era"><div class="dstv neu">—</div><div class="dstl">ERA</div></div>
     </div>
